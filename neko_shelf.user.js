@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NekoShelf
 // @namespace    https://github.com/Laynholt/neko_shelf
-// @version      1.5.0
+// @version      1.5.1
 // @description  Скачивание манги, манхвы и ранобэ с MangaLIB, RanobeLIB, HentaiLIB, SlashLIB, ReManga, MangaBuff, MangaDex, Dynasty Scans, LilyManga, Yurivan, IMHentai, Nude-Moon, nhentai в PDF, CBZ, ZIP, EPUB, FB2, TXT и HTML. Своя читалка там, где сайт без входа показывает 404. Основан на LibSaver (dfy-dpg).
 // @author       laynholt
 // @license      GPL-3.0
@@ -92,7 +92,7 @@
     { re: /(^|\.)imhentai\.xxx$/, type: 'imhentai', kind: 'manga', slug: /^\/(?:gallery|view)\/(\d+)/ },
     { re: /(^|\.)nude-moon\.org$/, type: 'nudemoon', kind: 'manga', slug: /^\/(\d+-(?:online)?-[^/]*?)(?:\.html)?$/ },
     { re: /(^|\.)nhentai\.net$/, type: 'nhentai', kind: 'manga', slug: /^\/g\/(\d+)/ },
-    { re: /(^|\.)mangadex\.org$/, type: 'mangadex', kind: 'manga', slug: /^\/title\/([0-9a-f-]{36})/ },
+    { re: /(^|\.)mangadex\.org$/, type: 'mangadex', kind: 'manga', slug: /^\/((?:title|chapter)\/[0-9a-f-]{36})/ },
     { re: /(^|\.)lilymanga\.net$/, type: 'madara', kind: 'manga', slug: /^\/((?:gl|manga|manhwa|webtoon)\/[^/]+)/ },
     // подборка артов (…/images) проверяется раньше серии, иначе /series/x/images распознается как серия
     { re: /(^|\.)dynasty-scans\.com$/, type: 'dynasty', kind: 'manga', slug: /^\/((?:authors|series|doujins|pairings|tags|scanlators)\/[^/?#]+\/images|(?:series|anthologies|chapters|images)\/[^/?#]+)/ },
@@ -301,6 +301,14 @@
 
   const site = SITES.find((s) => s.re.test(location.hostname));
   if (!site) return;
+
+  // Сайты с Trusted Types (MangaDex) запрещают строки в innerHTML и DOMParser — без политики скрипт падает на старте.
+  // Политика пропускает строки как есть, и это безопасно: в innerHTML идёт только наша разметка с экранированными данными,
+  // а чужой HTML DOMParser разбирает в отдельный документ, где скрипты не выполняются, и в страницу он попадает только после cleanDoc
+  let ttPolicy = null;
+  try { ttPolicy = window.trustedTypes?.createPolicy('neko-shelf', { createHTML: (s) => s }) || null; } catch { /* имя политики не разрешено — работаем без неё */ }
+  const trusted = (s) => (ttPolicy ? ttPolicy.createHTML(s) : s);
+  const parseHtml = (s) => new DOMParser().parseFromString(trusted(s), 'text/html');
 
   // ---------- сеть ----------
 
@@ -528,7 +536,7 @@
     const chapters = [...byKey.values()].sort(byNumber);
     // платные главы оставляем в списке, но помечаем — скачать их без покупки нельзя
     for (const ch of chapters) if (ch.branches.every((b) => b.paid)) ch.name = `${ch.name} [платная]`.trim();
-    const desc = new DOMParser().parseFromString(t.description || '', 'text/html').body;
+    const desc = parseHtml(t.description || '').body;
     const meta = {
       title: t.main_name || t.secondary_name || slug,
       author: '',
@@ -555,7 +563,7 @@
     const charset = (r.headers.get('content-type') || '').match(/charset=["']?([\w-]+)/i)?.[1] || head.match(/charset=["']?([\w-]+)/i)?.[1] || 'utf-8';
     let text;
     try { text = new TextDecoder(charset).decode(buf); } catch { text = new TextDecoder().decode(buf); } // неизвестная кодировка — UTF-8
-    return new DOMParser().parseFromString(text, 'text/html');
+    return parseHtml(text);
   }
   const abs = (u) => u && new URL(u, location.origin).href;
   async function mangabuffTitle(slug) {
@@ -570,7 +578,7 @@
         headers: { 'X-CSRF-TOKEN': csrf, 'X-Requested-With': 'XMLHttpRequest', 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' },
         body: 'manga_id=' + encodeURIComponent(id),
       }).then(checkedJson));
-      items.push(...new DOMParser().parseFromString(r.content || '', 'text/html').querySelectorAll('.chapters__item'));
+      items.push(...parseHtml(r.content || '').querySelectorAll('.chapters__item'));
     }
     const seen = new Set();
     const chapters = items.filter((a) => !seen.has(a.getAttribute('href')) && seen.add(a.getAttribute('href'))).map((a) => ({
@@ -668,11 +676,13 @@
     }, pages);
   }
 
-  const htmlText = (html) => new DOMParser().parseFromString(html || '', 'text/html').body.textContent.trim();
+  const htmlText = (html) => parseHtml(html || '').body.textContent.trim();
 
   // MangaDex: открытый API; перевод = язык + команда; картинки отдаёт сервер MangaDex@Home, адрес — на каждую главу свой
   const mdGet = (path) => retry(() => fetch('https://api.mangadex.org' + path).then(checkedJson));
-  async function mangadexTitle(id) {
+  async function mangadexTitle(path) { // title/{id} или chapter/{id} — со страницы главы берём её тайтл целиком
+    let id = path.split('/')[1];
+    if (path.startsWith('chapter/')) id = (await mdGet(`/chapter/${id}`)).data.relationships.find((r) => r.type === 'manga').id;
     const m = (await mdGet(`/manga/${id}?includes[]=author&includes[]=artist&includes[]=cover_art`)).data;
     const a = m.attributes;
     const rating = ['safe', 'suggestive', 'erotica', 'pornographic'].map((r) => `contentRating[]=${r}`).join('&');
@@ -831,7 +841,7 @@
     for (const a of d.attachments || []) if (a.name && a.url) att[a.name] = new URL(a.url, location.origin).href;
     if (content == null || content === '') throw new Error('нет текста (платная глава или нужен вход в аккаунт?)');
 
-    const doc = new DOMParser().parseFromString(`<body>${pmToHtml(content, att)}</body>`, 'text/html');
+    const doc = parseHtml(`<body>${pmToHtml(content, att)}</body>`);
     // как в оригинале: <img> с пустым src заполняем вложениями по порядку, а если картинок нет — дописываем вложения в конец
     const imgs = [...doc.querySelectorAll('img')];
     const attList = Object.values(att);
@@ -894,7 +904,7 @@
   // XHTML главы -> плоский список блоков для FB2/TXT/PDF: {img} | {hr} | {text, fb2, head}
   const FB2_INLINE = { STRONG: 'strong', B: 'strong', EM: 'emphasis', I: 'emphasis', U: 'emphasis', S: 'strikethrough', DEL: 'strikethrough' };
   function blocks(html) {
-    const body = new DOMParser().parseFromString(`<body>${html}</body>`, 'text/html').body;
+    const body = parseHtml(`<body>${html}</body>`).body;
     const ws = (s) => s.replace(/\s+/g, ' ').trim();
     const inline = (n) => {
       if (n.nodeType === 3) return esc(n.data);
@@ -1205,7 +1215,7 @@ ${sections}
   const host = document.createElement('div');
   host.style.cssText = 'position:fixed;right:16px;bottom:16px;z-index:2147483647';
   const root = host.attachShadow({ mode: 'open' });
-  root.innerHTML = `
+  root.innerHTML = trusted(`
 <style>
   :host{all:initial;font:14px/1.4 system-ui,-apple-system,sans-serif;color:#eee}
   .fab{width:${FAB}px;height:${FAB}px;padding:0;border:0;background:url(${ICON}) center/contain no-repeat;filter:drop-shadow(0 2px 4px #0008);cursor:grab;touch-action:none;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
@@ -1292,7 +1302,7 @@ ${sections}
   <progress max="1" value="0" hidden></progress>
   <div class="st"></div>
 </div>
-<button class="fab" title="NekoShelf: скачать тайтл (можно перетащить)" aria-label="NekoShelf: скачать тайтл"></button>`;
+<button class="fab" title="NekoShelf: скачать тайтл (можно перетащить)" aria-label="NekoShelf: скачать тайтл"></button>`);
   const $ = (s) => root.querySelector(s);
   const panel = $('.panel');
   $('.ver').textContent = VERSION && 'v' + VERSION;
@@ -1385,11 +1395,11 @@ ${sections}
       $('.title').textContent = info.meta.title;
       $('.edit').hidden = false;
       const opts = info.chapters.map((ch, i) => `<option value="${i}">${esc(chapterLabel(ch))}</option>`).join('');
-      $('.from').innerHTML = opts;
-      $('.to').innerHTML = opts;
+      $('.from').innerHTML = trusted(opts);
+      $('.to').innerHTML = trusted(opts);
       $('.to').value = String(info.chapters.length - 1);
-      $('.branch').innerHTML = '<option value="">Авто (первый доступный)</option>' +
-        [...info.branches].map(([id, name]) => `<option value="${esc(id)}">${esc(name)}</option>`).join('');
+      $('.branch').innerHTML = trusted('<option value="">Авто (первый доступный)</option>' +
+        [...info.branches].map(([id, name]) => `<option value="${esc(id)}">${esc(name)}</option>`).join(''));
       const oneBranch = info.branches.size < 2;
       $('.branch').hidden = oneBranch;
       $('.branch').previousElementSibling.hidden = oneBranch;
@@ -1464,7 +1474,7 @@ ${sections}
   const reader = document.createElement('div');
   reader.style.cssText = 'position:fixed;inset:0;z-index:2147483646;display:none';
   const rRoot = reader.attachShadow({ mode: 'open' });
-  rRoot.innerHTML = `
+  rRoot.innerHTML = trusted(`
 <style>
   :host{all:initial}
   .wrap{position:absolute;inset:0;overflow:auto;background:#121212;color:#ddd;font:17px/1.6 system-ui,-apple-system,sans-serif}
@@ -1478,7 +1488,7 @@ ${sections}
   .ch{display:block;width:100%;text-align:left;margin:4px 0;border-color:#333}
   .text{max-width:720px;margin:0 auto}
 </style>
-<div class="wrap"><div class="bar"><b></b><button class="toc" title="Список глав" aria-label="Список глав">☰</button><button class="prev" aria-label="Предыдущая глава">‹</button><select class="sel" aria-label="Глава"></select><button class="next" aria-label="Следующая глава">›</button><button class="x" title="Закрыть читалку" aria-label="Закрыть читалку">✕</button></div><div class="body"></div></div>`;
+<div class="wrap"><div class="bar"><b></b><button class="toc" title="Список глав" aria-label="Список глав">☰</button><button class="prev" aria-label="Предыдущая глава">‹</button><select class="sel" aria-label="Глава"></select><button class="next" aria-label="Следующая глава">›</button><button class="x" title="Закрыть читалку" aria-label="Закрыть читалку">✕</button></div><div class="body"></div></div>`);
   const r$ = (s) => rRoot.querySelector(s);
   document.documentElement.appendChild(reader);
 
@@ -1503,13 +1513,13 @@ ${sections}
       const { meta, chapters } = rTitle;
       const i = lost.read ? chapters.findIndex((ch) => sameNum(ch.volume, lost.read.volume) && sameNum(ch.number, lost.read.number)) : -1;
       r$('b').textContent = meta.title;
-      r$('.sel').innerHTML = '<option value="">Список глав</option>' + chapters.map((ch, k) => `<option value="${k}">${esc(chapterLabel(ch))}</option>`).join('');
+      r$('.sel').innerHTML = trusted('<option value="">Список глав</option>' + chapters.map((ch, k) => `<option value="${k}">${esc(chapterLabel(ch))}</option>`).join(''));
       r$('.sel').value = i < 0 ? '' : String(i);
       r$('.prev').disabled = i <= 0;
       r$('.next').disabled = i < 0 || i >= chapters.length - 1;
       if (i < 0) {
-        body.innerHTML = (lost.read ? '<p>Этой главы нет в списке.</p>' : '') +
-          (chapters.map((ch, k) => `<button class="ch" data-i="${k}">${esc(chapterLabel(ch))}</button>`).join('') || '<p>Глав нет</p>');
+        body.innerHTML = trusted((lost.read ? '<p>Этой главы нет в списке.</p>' : '') +
+          (chapters.map((ch, k) => `<button class="ch" data-i="${k}">${esc(chapterLabel(ch))}</button>`).join('') || '<p>Глав нет</p>'));
         return;
       }
       const d = await chapterData(lost.slug, chapters[i], lost.bid);
