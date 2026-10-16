@@ -633,16 +633,21 @@ ${sections}
   }
 
   // pdf-lib и fontkit (~1,3 МБ) нужны только для PDF ранобэ — грузим при первом таком скачивании, а не на каждой странице.
-  // UMD-сборки кладут себя в module.exports, если он передан
-  const PDF_LIB_URLS = ['https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js', 'https://cdn.jsdelivr.net/npm/@pdf-lib/fontkit@1.1.1/dist/fontkit.umd.min.js'];
-  async function loadUmd(url) {
-    const code = await retry(() => fetch(url).then((r) => (r.ok ? r.text() : Promise.reject(Object.assign(new Error('HTTP ' + r.status), { status: r.status })))), 3);
+  // UMD-сборки кладут себя в module.exports, если он передан. Код выполняем, только если SHA-256 совпал с закреплённым
+  const PDF_LIBS = [
+    ['https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js', '0f9a5cad07941f0826586c94e089d89b918c46e5c17cf2d5a3c6f666e3bc694f'],
+    ['https://cdn.jsdelivr.net/npm/@pdf-lib/fontkit@1.1.1/dist/fontkit.umd.min.js', 'd8df561b9fba98e24f2e5130e40948809281bbbc55a20c412359f1a0a5eb35a6'],
+  ];
+  async function loadUmd([url, sha256]) {
+    const buf = await retry(() => fetch(url).then((r) => (r.ok ? r.arrayBuffer() : Promise.reject(Object.assign(new Error('HTTP ' + r.status), { status: r.status })))), 3);
+    const hash = [...new Uint8Array(await crypto.subtle.digest('SHA-256', buf))].map((b) => pad(b.toString(16), 2)).join('');
+    if (hash !== sha256) throw new Error('файл библиотеки изменён на CDN: ' + url);
     const module = { exports: {} };
-    new Function('module', 'exports', code)(module, module.exports);
+    new Function('module', 'exports', new TextDecoder().decode(buf))(module, module.exports);
     return module.exports;
   }
   let pdfLibs;
-  const getPdfLibs = () => (pdfLibs ??= Promise.all(PDF_LIB_URLS.map(loadUmd)).catch((e) => {
+  const getPdfLibs = () => (pdfLibs ??= Promise.all(PDF_LIBS.map(loadUmd)).catch((e) => {
     pdfLibs = null; // в следующий раз попробуем снова
     throw new Error('не загрузилась библиотека PDF: ' + e.message);
   }));
