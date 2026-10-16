@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NekoShelf
 // @namespace    https://github.com/Laynholt/neko_shelf
-// @version      1.2.0
+// @version      1.2.1
 // @description  Скачивание манги и ранобэ с MangaLIB / RanobeLIB / HentaiLIB / SlashLIB / ReManga / MangaBuff в PDF, CBZ, ZIP, EPUB, FB2, TXT и HTML. Своя читалка там, где сайт без входа показывает 404. Основан на LibSaver (dfy-dpg).
 // @author       laynholt
 // @license      GPL-3.0
@@ -938,8 +938,21 @@ ${sections}
   .info{flex:none;width:28px;height:28px;padding:0;border:1px solid #555;border-radius:50%;background:#2a2a2a;color:#ccc;font:bold 14px/1 Georgia,serif;cursor:pointer}
   .info[aria-expanded="true"]{background:#e64a19;border-color:#e64a19;color:#fff}
   .panel.about-open > :not(.head):not(.about){display:none!important}
-  .about p{margin:0 0 8px;font-size:13px;color:#ccc}
-  .about .links a{display:block;margin:6px 0}
+  .hero{display:flex;align-items:center;gap:12px;padding:12px;border-radius:10px;background:linear-gradient(135deg,#2d2540,#1d2b28)}
+  .hero img{width:52px;height:52px;flex:none;filter:drop-shadow(0 2px 4px #0006)}
+  .hero b{display:block;font-size:18px;letter-spacing:.2px}
+  .pill{display:inline-block;margin-top:4px;padding:1px 8px;border-radius:999px;background:#2e7d32;color:#e8f5e9;font-size:11px;font-weight:600}
+  .pill:empty{display:none}
+  .tagline{margin:12px 2px;font-size:13px;color:#bbb}
+  .links{display:grid;gap:6px}
+  .links a{display:flex;align-items:center;gap:10px;padding:9px 10px;border:1px solid #333;border-radius:8px;background:#262626;color:#eee;text-decoration:none}
+  .links a:hover,.links a:focus-visible{background:#2f2f2f;border-color:#555}
+  .links a::after{content:'↗';color:#777}
+  .links svg{width:18px;height:18px;flex:none;fill:none;stroke:#ff8a65;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+  .links span{flex:1}
+  .links small{display:block;color:#888;font-size:11px}
+  .links .bug{border-color:#e64a1999}
+  .credit{margin:12px 0 0;text-align:center;font-size:11px;color:#777}
   label{display:block;margin:8px 0 3px;color:#aaa;font-size:12px}
   select{width:100%;box-sizing:border-box;font-size:15px;padding:8px;border-radius:8px;border:1px solid #555;background:#2a2a2a;color:#eee}
   .row{display:flex;gap:8px;margin-top:12px}
@@ -957,14 +970,14 @@ ${sections}
 <div class="panel" hidden>
   <div class="head"><h3 class="title">NekoShelf</h3><button class="info" title="О скрипте" aria-label="О скрипте" aria-expanded="false">i</button></div>
   <div class="about" hidden>
-    <p><b>NekoShelf</b> <span class="ver"></span></p>
-    <p>Скачивание манги, манхвы и ранобэ одним файлом прямо со страницы тайтла.</p>
-    <p>Автор: laynholt. Основан на LibSaver (dfy-dpg), лицензия GPL-3.0.</p>
-    <p class="links">
-      <a href="${REPO}" target="_blank" rel="noopener">Исходный код на GitHub</a>
-      <a href="${REPO}/releases" target="_blank" rel="noopener">Релизы и история изменений</a>
-      <a class="bug" href="${REPO}/issues/new?template=bug_report.yml" target="_blank" rel="noopener">Сообщить об ошибке</a>
-    </p>
+    <div class="hero"><img src="${ICON}" alt=""><div><b>NekoShelf</b><span class="pill ver"></span></div></div>
+    <p class="tagline">Скачивание манги, манхвы и ранобэ одним файлом прямо со страницы тайтла.</p>
+    <div class="links">
+      <a href="${REPO}" target="_blank" rel="noopener"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 7l-5 5 5 5M16 7l5 5-5 5"/></svg><span>Исходный код<small>GitHub · Laynholt/neko_shelf</small></span></a>
+      <a href="${REPO}/releases" target="_blank" rel="noopener"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12V4h8l10 10-8 8z"/><circle cx="7.5" cy="8.5" r="1.5"/></svg><span>Релизы<small>история изменений и обновления</small></span></a>
+      <a class="bug" href="${REPO}/issues/new?template=bug_report.yml" target="_blank" rel="noopener"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v3M8 6h8a2 2 0 0 1 2 2v6a6 6 0 0 1-12 0V8a2 2 0 0 1 2-2zM3 10h3M18 10h3M3 16h3M18 16h3M12 11v8"/></svg><span>Сообщить об ошибке<small>форма с уже заполненной версией и браузером</small></span></a>
+    </div>
+    <p class="credit">Автор laynholt · основан на LibSaver (dfy-dpg) · GPL-3.0</p>
   </div>
   <div class="form" hidden>
     <label>Перевод</label><select class="branch"></select>
