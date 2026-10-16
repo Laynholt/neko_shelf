@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NekoShelf
 // @namespace    https://github.com/Laynholt/neko_shelf
-// @version      1.0.0
+// @version      1.0.1
 // @description  Скачивание манги и ранобэ с MangaLIB / RanobeLIB / HentaiLIB / SlashLIB в PDF, CBZ, ZIP, EPUB, FB2, TXT и HTML. Своя читалка там, где сайт без входа показывает 404. Основан на LibSaver (dfy-dpg).
 // @author       laynholt
 // @license      GPL-3.0
@@ -32,10 +32,13 @@
 // @connect      cdnlibs.org
 // @connect      hentaicdn.org
 // @connect      mangalib.me
+// @connect      mangalib.org
 // @connect      ranobelib.me
 // @connect      novelslib.me
+// @connect      hentailib.me
+// @connect      hentailib.org
+// @connect      shlib.life
 // @connect      cdn.jsdelivr.net
-// @connect      *
 // @run-at       document-start
 // @noframes
 // ==/UserScript==
@@ -261,9 +264,15 @@
   const gmXhr = typeof GM !== 'undefined' && GM.xmlHttpRequest ? GM.xmlHttpRequest.bind(GM)
     : typeof GM_xmlhttpRequest === 'function' ? GM_xmlhttpRequest : null;
 
+  const GM_HOSTS = /(^|\.)(cdnlibs\.org|imglib\.info|hentaicdn\.org|mangalib\.(me|org)|ranobelib\.me|novelslib\.me|hentailib\.(me|org)|shlib\.life|cdn\.jsdelivr\.net)$/;
   function gmGet(url, responseType, headers) {
     return new Promise((resolve, reject) => {
       if (!gmXhr) return reject(new Error('менеджер скриптов не дал GM.xmlHttpRequest'));
+      // адреса картинок приходят из глав — привилегированный запрос пускаем только к своим серверам
+      // (продублировано с @connect: Userscripts на iOS его не соблюдает)
+      let u;
+      try { u = new URL(url); } catch { return reject(new Error('плохой адрес')); }
+      if (u.protocol !== 'https:' || !GM_HOSTS.test(u.hostname)) return reject(new Error('чужой сервер: ' + u.hostname));
       gmXhr({
         method: 'GET', url, responseType, headers, timeout: 60000,
         onload: (r) => (r.status >= 200 && r.status < 300 ? resolve(r.response) : reject(Object.assign(new Error('HTTP ' + r.status), { status: r.status }))),
@@ -455,6 +464,21 @@
       if (!imgs.length) for (const u of attList) { const im = doc.createElement('img'); im.setAttribute('src', u); doc.body.appendChild(im); }
       else { let k = 0; for (const im of imgs) if (!im.getAttribute('src') && k < attList.length) im.setAttribute('src', attList[k++]); }
     }
+    return cleanDoc(doc);
+  }
+
+  // HTML главы пишут люди на сайте: оставляем только разметку текста и картинки по http(s), остальное — текстом
+  const KEEP_TAGS = new Set('P BR HR H1 H2 H3 H4 H5 H6 STRONG B EM I U S DEL BLOCKQUOTE UL OL LI IMG SUP SUB SPAN DIV TABLE THEAD TBODY TR TD TH'.split(' '));
+  const httpUrl = (v) => { try { return /^https?:$/.test(new URL(v, location.origin).protocol); } catch { return false; } };
+  function cleanDoc(doc) {
+    for (const el of doc.body.querySelectorAll('script,style,iframe,object,embed,svg,math,template,noscript,textarea,select,form,link,meta,base,title')) el.remove();
+    for (const el of [...doc.body.querySelectorAll('*')]) {
+      if (!KEEP_TAGS.has(el.tagName)) { el.replaceWith(...el.childNodes); continue; }
+      for (const a of [...el.attributes]) {
+        const ok = a.name === 'alt' || (a.name === 'src' && el.tagName === 'IMG' && httpUrl(a.value)) || (a.name === 'style' && /^text-align:\s*\w+;?$/.test(a.value));
+        if (!ok) el.removeAttribute(a.name);
+      }
+    }
     return doc;
   }
 
@@ -488,7 +512,6 @@
         const p = doc.createElement('p'); p.textContent = '[картинка не загрузилась]'; im.replaceWith(p);
       }
     }
-    for (const el of doc.querySelectorAll('script,style,iframe')) el.remove();
     const xs = new XMLSerializer();
     return { html: [...doc.body.childNodes].map((n) => xs.serializeToString(n)).join('\n') };
   }
@@ -994,10 +1017,7 @@ ${sections}
         }));
       } else {
         if (seq !== rSeq) return;
-        const doc = ranobeDoc(d);
-        // HTML главы пришёл с сервера — выкидываем всё исполняемое
-        for (const el of doc.querySelectorAll('script,style,iframe,object,embed,link,meta,base,form')) el.remove();
-        for (const el of doc.querySelectorAll('*')) for (const a of [...el.attributes]) if (/^on|^srcdoc$/i.test(a.name) || /^\s*javascript:/i.test(a.value)) el.removeAttribute(a.name);
+        const doc = ranobeDoc(d); // уже очищен cleanDoc
         const div = document.createElement('div');
         div.className = 'text';
         div.append(...doc.body.childNodes);
