@@ -33,6 +33,9 @@
 | [SlashLIB](https://v2.shlib.life) | манга |
 | [ReManga](https://remanga.org) | манга, манхва, маньхуа (платные главы — только купленные) |
 | [MangaBuff](https://mangabuff.ru) | манга, манхва, маньхуа |
+| [IMHentai](https://imhentai.xxx) | галереи (18+) |
+| [Nude-Moon](https://nude-moon.org) | галереи (18+) |
+| [nhentai](https://nhentai.net) | галереи (18+), поддержка экспериментальная |
 
 ## Установка
 

@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         NekoShelf
 // @namespace    https://github.com/Laynholt/neko_shelf
-// @version      1.2.1
-// @description  Скачивание манги и ранобэ с MangaLIB / RanobeLIB / HentaiLIB / SlashLIB / ReManga / MangaBuff в PDF, CBZ, ZIP, EPUB, FB2, TXT и HTML. Своя читалка там, где сайт без входа показывает 404. Основан на LibSaver (dfy-dpg).
+// @version      1.3.0
+// @description  Скачивание манги и ранобэ с MangaLIB / RanobeLIB / HentaiLIB / SlashLIB / ReManga / MangaBuff / IMHentai / Nude-Moon / nhentai в PDF, CBZ, ZIP, EPUB, FB2, TXT и HTML. Своя читалка там, где сайт без входа показывает 404. Основан на LibSaver (dfy-dpg).
 // @author       laynholt
 // @license      GPL-3.0
 // @homepageURL  https://github.com/Laynholt/neko_shelf
@@ -28,6 +28,12 @@
 // @match        https://*.remanga.org/*
 // @match        https://mangabuff.ru/*
 // @match        https://*.mangabuff.ru/*
+// @match        https://imhentai.xxx/*
+// @match        https://*.imhentai.xxx/*
+// @match        https://nude-moon.org/*
+// @match        https://*.nude-moon.org/*
+// @match        https://nhentai.net/*
+// @match        https://*.nhentai.net/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM.xmlHttpRequest
 // @connect      imglib.info
@@ -42,6 +48,9 @@
 // @connect      shlib.life
 // @connect      reimg2.org
 // @connect      mangabuff.ru
+// @connect      imhentai.xxx
+// @connect      nude-moon.org
+// @connect      nhentai.net
 // @connect      cdn.jsdelivr.net
 // @run-at       document-start
 // @noframes
@@ -62,6 +71,10 @@
     { re: /(^|\.)shlib\.life$/, type: 'lib', kind: 'manga', siteId: 2, chapSiteId: 4, api: 'https://hapi.hentaicdn.org', img: ['https://img3.hentaicdn.org', 'https://img2.hentaicdn.org'] },
     { re: /(^|\.)remanga\.org$/, type: 'remanga', kind: 'manga' },
     { re: /(^|\.)mangabuff\.ru$/, type: 'mangabuff', kind: 'manga' },
+    // галереи (одна «глава» на тайтл); slug — откуда в адресе брать id галереи
+    { re: /(^|\.)imhentai\.xxx$/, type: 'imhentai', kind: 'manga', slug: /^\/(?:gallery|view)\/(\d+)/ },
+    { re: /(^|\.)nude-moon\.org$/, type: 'nudemoon', kind: 'manga', slug: /^\/(\d+-(?:online)?-[^/]*?)(?:\.html)?$/ },
+    { re: /(^|\.)nhentai\.net$/, type: 'nhentai', kind: 'manga', slug: /^\/g\/(\d+)/ },
   ];
   // Набор как в оригинале; первый — по умолчанию (манга — PDF, ранобэ — TXT)
   const FORMATS = { ranobe: ['txt', 'epub', 'fb2', 'pdf', 'html'], manga: ['pdf', 'cbz', 'zip', 'epub', 'html'] };
@@ -271,7 +284,7 @@
   const gmXhr = typeof GM !== 'undefined' && GM.xmlHttpRequest ? GM.xmlHttpRequest.bind(GM)
     : typeof GM_xmlhttpRequest === 'function' ? GM_xmlhttpRequest : null;
 
-  const GM_HOSTS = /(^|\.)(cdnlibs\.org|imglib\.info|hentaicdn\.org|mangalib\.(me|org)|ranobelib\.me|novelslib\.me|hentailib\.(me|org)|shlib\.life|reimg2\.org|mangabuff\.ru|cdn\.jsdelivr\.net)$/;
+  const GM_HOSTS = /(^|\.)(cdnlibs\.org|imglib\.info|hentaicdn\.org|mangalib\.(me|org)|ranobelib\.me|novelslib\.me|hentailib\.(me|org)|shlib\.life|reimg2\.org|mangabuff\.ru|imhentai\.xxx|nude-moon\.org|nhentai\.net|cdn\.jsdelivr\.net)$/;
   function gmGet(url, responseType, headers) {
     return new Promise((resolve, reject) => {
       if (!gmXhr) return reject(new Error('менеджер скриптов не дал GM.xmlHttpRequest'));
@@ -340,7 +353,8 @@
         if (i) state.fromBackup++;
         return { buf, ext: sniffExt(buf) };
       } catch (e) {
-        if (i + 1 >= urls.length || !(await askFallback(e))) throw e;
+        // вопрос про сжатые AVIF — только для Lib; у остальных запасные адреса равноценны, берём молча
+        if (i + 1 >= urls.length || (site.type === 'lib' && !(await askFallback(e)))) throw e;
       }
     }
   }
@@ -510,9 +524,16 @@
   }
 
   // MangaBuff: API нет — список глав и страницы берём из HTML сайта
-  const getHtml = async (url, init) => new DOMParser().parseFromString(
-    await retry(() => fetch(url, init).then((r) => (r.ok ? r.text() : Promise.reject(Object.assign(new Error('HTTP ' + r.status), { status: r.status }))))),
-    'text/html');
+  // Декодируем по кодировке из заголовка или <meta>: nude-moon, например, отдаёт windows-1251, а r.text() понимает только UTF-8
+  async function getHtml(url, init) {
+    const r = await retry(() => fetch(url, init).then((r) => (r.ok ? r : Promise.reject(Object.assign(new Error('HTTP ' + r.status), { status: r.status })))));
+    const buf = await r.arrayBuffer();
+    const head = new TextDecoder('latin1').decode(buf.slice(0, 2048));
+    const charset = (r.headers.get('content-type') || '').match(/charset=["']?([\w-]+)/i)?.[1] || head.match(/charset=["']?([\w-]+)/i)?.[1] || 'utf-8';
+    let text;
+    try { text = new TextDecoder(charset).decode(buf); } catch { text = new TextDecoder().decode(buf); } // неизвестная кодировка — UTF-8
+    return new DOMParser().parseFromString(text, 'text/html');
+  }
   const abs = (u) => u && new URL(u, location.origin).href;
   async function mangabuffTitle(slug) {
     const doc = await getHtml(`/manga/${slug}`);
@@ -549,7 +570,72 @@
     return { pages: [...doc.querySelectorAll('.reader__item img')].map((i) => ({ urls: [abs(i.getAttribute('data-src') || i.getAttribute('src'))] })) };
   }
 
-  const ADAPTERS = { lib: [libTitle, libChapter], remanga: [remangaTitle, remangaChapter], mangabuff: [mangabuffTitle, mangabuffChapter] };
+  // Галереи: весь тайтл — одна «глава», страницы вычисляем сразу и храним в ней
+  const gallery = (meta, pages) => ({ meta, chapters: [{ volume: '1', number: '1', name: '', pages }], branches: new Map() });
+  const galleryChapter = (slug, ch) => ({ pages: ch.pages });
+  const EXT = { j: 'jpg', p: 'png', w: 'webp', g: 'gif', a: 'avif' }; // коды формата у imhentai и nhentai
+  // строка из блока сведений о галерее imhentai («Artists: …»), а не одноимённый пункт меню сайта
+  const liText = (doc, label) => [...doc.querySelectorAll('.galleries_info li')].find((li) => li.textContent.trim().startsWith(label));
+
+  // imhentai: сервер, папка и формат каждой страницы лежат прямо в HTML галереи
+  async function imhentaiTitle(id) {
+    const doc = await getHtml(`/gallery/${id}/`);
+    const val = (k) => doc.getElementById(k)?.value;
+    const [server, dir, key, count] = ['load_server', 'load_dir', 'load_id', 'load_pages'].map(val);
+    const th = JSON.parse(doc.documentElement.innerHTML.match(/g_th\s*=\s*\$\.parseJSON\('([^']*)'\)/)?.[1] || '{}');
+    if (!server || !dir || !key || !+count) throw new Error('не нашёл данные галереи на странице');
+    const pages = Array.from({ length: +count }, (_, i) => {
+      const [code, w] = (th[i + 1] || 'j').split(',');
+      return { urls: [`https://m${server}.imhentai.xxx/${dir}/${key}/${i + 1}.${EXT[code] || 'jpg'}`], width: +w || undefined };
+    });
+    const artists = liText(doc, 'Artists:');
+    const cover = doc.querySelector('.left_cover img');
+    return gallery({
+      title: val('gallery_title') || doc.querySelector('h1')?.textContent.trim() || id,
+      author: artists ? [...artists.querySelectorAll('a')].map((a) => a.firstChild?.textContent.trim()).filter(Boolean).join(', ') : '',
+      description: '',
+      cover: abs(cover?.getAttribute('data-src') || cover?.getAttribute('src')),
+    }, pages);
+  }
+
+  // nude-moon: у галереи есть страница онлайн-чтения, где все страницы перечислены в JS: images[N].src = '…'
+  async function nudemoonTitle(slug) {
+    const page = await getHtml(`/${slug}.html`);
+    let reader = page;
+    if (!slug.includes('-online-')) {
+      const link = page.querySelector('a[href*="-online--"]')?.getAttribute('href');
+      if (!link) throw new Error('не нашёл ссылку на онлайн-чтение');
+      reader = await getHtml(abs(link));
+    }
+    const pages = [...reader.documentElement.innerHTML.matchAll(/images\[\d+\]\.src\s*=\s*'([^']+)'/g)].map((m) => ({ urls: [abs(m[1])] }));
+    const thumb = page.querySelector('img[src*="/images/thumb/"]');
+    return gallery({
+      title: (page.querySelector('h1') || reader.querySelector('h1'))?.textContent.trim() || slug,
+      author: '',
+      description: '',
+      cover: abs(thumb?.getAttribute('src')),
+    }, pages);
+  }
+
+  // nhentai: открытый JSON API. shortcut: написан по документации API без живой проверки — сайт не открывался для теста
+  async function nhentaiTitle(id) {
+    const g = await retry(() => fetch(`/api/gallery/${id}`).then(checkedJson));
+    // картинки раздают несколько серверов с одинаковыми путями: если один не ответит, берём следующий
+    const hosts = ['i', 'i1', 'i2', 'i3', 'i4'].map((h) => `https://${h}.nhentai.net/galleries/${g.media_id}/`);
+    const pages = (g.images?.pages || []).map((p, i) => ({ urls: hosts.map((h) => `${h}${i + 1}.${EXT[p.t] || 'jpg'}`), width: p.w, height: p.h }));
+    const c = g.images?.cover;
+    return gallery({
+      title: g.title?.pretty || g.title?.english || g.title?.japanese || id,
+      author: (g.tags || []).filter((t) => t.type === 'artist').map((t) => t.name).join(', '),
+      description: '',
+      cover: c && `https://t.nhentai.net/galleries/${g.media_id}/cover.${EXT[c.t] || 'jpg'}`,
+    }, pages);
+  }
+
+  const ADAPTERS = {
+    lib: [libTitle, libChapter], remanga: [remangaTitle, remangaChapter], mangabuff: [mangabuffTitle, mangabuffChapter],
+    imhentai: [imhentaiTitle, galleryChapter], nudemoon: [nudemoonTitle, galleryChapter], nhentai: [nhentaiTitle, galleryChapter],
+  };
   const loadTitle = (slug) => ADAPTERS[site.type][0](slug);
   async function chapterData(slug, ch, branch) {
     const d = await ADAPTERS[site.type][1](slug, ch, branch);
@@ -1150,7 +1236,7 @@ ${sections}
   let lastClick = null; // SPA уходит на /404 без перезагрузки — помним, куда кликнули
   let rTitle = null; // { slug, meta, chapters }
   let rSeq = 0; // ответ старой главы не должен перерисовать новую
-  const pageSlug = () => lost?.slug || parseSlug(location.pathname);
+  const pageSlug = () => lost?.slug || (site.slug ? (location.pathname.match(site.slug) || [])[1] || null : parseSlug(location.pathname));
   addEventListener('click', (e) => { const a = e.target.closest?.('a[href]'); if (a) lastClick = a.href; }, true);
   // «Назад»/«Вперёд»: адрес уже сменился, а уход на /404 ещё впереди — иначе открыли бы старый клик
   addEventListener('popstate', () => { lastClick = location.href; });
