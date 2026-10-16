@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NekoShelf
 // @namespace    https://github.com/Laynholt/neko_shelf
-// @version      1.0.1
+// @version      1.0.2
 // @description  Скачивание манги и ранобэ с MangaLIB / RanobeLIB / HentaiLIB / SlashLIB в PDF, CBZ, ZIP, EPUB, FB2, TXT и HTML. Своя читалка там, где сайт без входа показывает 404. Основан на LibSaver (dfy-dpg).
 // @author       laynholt
 // @license      GPL-3.0
@@ -24,8 +24,6 @@
 // @match        https://*.hentailib.org/*
 // @match        https://shlib.life/*
 // @match        https://*.shlib.life/*
-// @require      https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js
-// @require      https://cdn.jsdelivr.net/npm/@pdf-lib/fontkit@1.1.1/dist/fontkit.umd.min.js
 // @grant        GM_xmlhttpRequest
 // @grant        GM.xmlHttpRequest
 // @connect      imglib.info
@@ -272,7 +270,8 @@
       // (продублировано с @connect: Userscripts на iOS его не соблюдает)
       let u;
       try { u = new URL(url); } catch { return reject(new Error('плохой адрес')); }
-      if (u.protocol !== 'https:' || !GM_HOSTS.test(u.hostname)) return reject(new Error('чужой сервер: ' + u.hostname));
+      // status 403 — чтобы retry не повторял: ответ не изменится
+      if (u.protocol !== 'https:' || !GM_HOSTS.test(u.hostname)) return reject(Object.assign(new Error('чужой сервер: ' + u.hostname), { status: 403 }));
       gmXhr({
         method: 'GET', url, responseType, headers, timeout: 60000,
         onload: (r) => (r.status >= 200 && r.status < 300 ? resolve(r.response) : reject(Object.assign(new Error('HTTP ' + r.status), { status: r.status }))),
@@ -343,10 +342,15 @@
     return state.fallback;
   }
 
+  // После первой ошибки остальные потоки не берут новые элементы — иначе главу, которая уже провалилась,
+  // докачивали бы в фоне, пока идёт следующая
   async function pool(items, n, fn) {
-    let i = 0;
+    let i = 0, failed = false;
     await Promise.all(Array.from({ length: Math.min(n, items.length) }, async () => {
-      while (i < items.length) { const k = i++; await fn(items[k], k); }
+      while (i < items.length && !failed) {
+        const k = i++;
+        try { await fn(items[k], k); } catch (e) { failed = true; throw e; }
+      }
     }));
   }
 
@@ -545,7 +549,7 @@
   // ---------- форматы ----------
 
   function epubFiles(zip, book, chapters, images, cover) {
-    const title = esc(book.title);
+    const title = esc(book.title + book.range);
     zip.add('META-INF/container.xml', '<?xml version="1.0"?><container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles></container>');
     zip.add('OEBPS/style.css', 'body{margin:0 4%;line-height:1.5}img{max-width:100%;height:auto;display:block;margin:0 auto}.page{text-align:center;page-break-after:always}h2{text-align:center}');
     chapters.forEach((c, i) => zip.add(`OEBPS/c${pad(i + 1, 4)}.xhtml`,
@@ -555,7 +559,7 @@
     // Отдельная первая страница с обложкой: cover-image в манифесте читалки используют только для библиотеки
     if (cover) zip.add('OEBPS/cover.xhtml', `<?xml version="1.0" encoding="utf-8"?>\n<!DOCTYPE html>\n<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="ru"><head><meta charset="utf-8"/><title>${title}</title><style>body{margin:0;text-align:center}img{max-width:100%;max-height:100vh;height:auto}</style></head><body><img src="${cover.path}" alt="${title}"/></body></html>`);
     const ncx = chapters.map((c, i) => `<navPoint id="n${i + 1}" playOrder="${i + 1}"><navLabel><text>${esc(c.title)}</text></navLabel><content src="c${pad(i + 1, 4)}.xhtml"/></navPoint>`).join('');
-    zip.add('OEBPS/toc.ncx', `<?xml version="1.0" encoding="utf-8"?><ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1"><head><meta name="dtb:uid" content="urn:neko-shelf:${esc(book.slug)}"/></head><docTitle><text>${title}</text></docTitle><navMap>${ncx}</navMap></ncx>`);
+    zip.add('OEBPS/toc.ncx', `<?xml version="1.0" encoding="utf-8"?><ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1"><head><meta name="dtb:uid" content="urn:neko-shelf:${esc(book.uid)}"/></head><docTitle><text>${title}</text></docTitle><navMap>${ncx}</navMap></ncx>`);
     const items = [
       '<item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>',
       '<item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>',
@@ -568,7 +572,7 @@
     zip.add('OEBPS/content.opf', `<?xml version="1.0" encoding="utf-8"?>
 <package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="uid" xml:lang="ru">
 <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
-<dc:identifier id="uid">urn:neko-shelf:${esc(book.slug)}</dc:identifier>
+<dc:identifier id="uid">urn:neko-shelf:${esc(book.uid)}</dc:identifier>
 <dc:title>${title}</dc:title><dc:language>ru</dc:language>
 ${book.author ? `<dc:creator>${esc(book.author)}</dc:creator>` : ''}
 ${book.description ? `<dc:description>${esc(book.description)}</dc:description>` : ''}
@@ -609,8 +613,8 @@ ${cover ? '<guide><reference type="cover" title="Обложка" href="cover.xht
     const annotation = book.description ? `<annotation>${book.description.split(/\n+/).map((p) => `<p>${esc(p)}</p>`).join('')}</annotation>` : '';
     const parts = [`<?xml version="1.0" encoding="UTF-8"?>
 <FictionBook xmlns="http://www.gribuser.ru/xml/fictionbook/2.0" xmlns:l="http://www.w3.org/1999/xlink">
-<description><title-info><genre>prose_contemporary</genre><author><nickname>${esc(book.author || 'Неизвестен')}</nickname></author><book-title>${esc(book.title)}</book-title>${annotation}${cover ? `<coverpage>${img(cover)}</coverpage>` : ''}<lang>ru</lang></title-info>
-<document-info><author><nickname>LibSaver</nickname></author><program-used>LibSaver userscript</program-used><date>${new Date().toISOString().slice(0, 10)}</date><id>libsaver-${esc(book.slug)}</id><version>1.0</version></document-info></description>
+<description><title-info><genre>prose_contemporary</genre><author><nickname>${esc(book.author || 'Неизвестен')}</nickname></author><book-title>${esc(book.title + book.range)}</book-title>${annotation}${cover ? `<coverpage>${img(cover)}</coverpage>` : ''}<lang>ru</lang></title-info>
+<document-info><author><nickname>NekoShelf</nickname></author><program-used>NekoShelf userscript</program-used><date>${new Date().toISOString().slice(0, 10)}</date><id>neko-shelf-${esc(book.uid)}</id><version>1.0</version></document-info></description>
 <body><title><p>${esc(book.title)}</p></title>
 ${sections}
 </body>\n`];
@@ -628,10 +632,25 @@ ${sections}
     return out.filter((s) => s != null).join('\n');
   }
 
-  // PDF ранобэ: текст нужно набирать шрифтом с кириллицей — для этого pdf-lib + fontkit (@require)
+  // pdf-lib и fontkit (~1,3 МБ) нужны только для PDF ранобэ — грузим при первом таком скачивании, а не на каждой странице.
+  // UMD-сборки кладут себя в module.exports, если он передан
+  const PDF_LIB_URLS = ['https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js', 'https://cdn.jsdelivr.net/npm/@pdf-lib/fontkit@1.1.1/dist/fontkit.umd.min.js'];
+  async function loadUmd(url) {
+    const code = await retry(() => fetch(url).then((r) => (r.ok ? r.text() : Promise.reject(Object.assign(new Error('HTTP ' + r.status), { status: r.status })))), 3);
+    const module = { exports: {} };
+    new Function('module', 'exports', code)(module, module.exports);
+    return module.exports;
+  }
+  let pdfLibs;
+  const getPdfLibs = () => (pdfLibs ??= Promise.all(PDF_LIB_URLS.map(loadUmd)).catch((e) => {
+    pdfLibs = null; // в следующий раз попробуем снова
+    throw new Error('не загрузилась библиотека PDF: ' + e.message);
+  }));
+
+  // PDF ранобэ: текст нужно набирать шрифтом с кириллицей — для этого pdf-lib + fontkit
   // shortcut: только обычное начертание без курсива/жирного и без закладок; слово шире строки не переносится
   async function textPdf(book, chapters, emb, cover) {
-    if (typeof PDFLib === 'undefined' || typeof fontkit === 'undefined') throw new Error('pdf-lib не загрузился (проверь @require в менеджере скриптов)');
+    const [PDFLib, fontkit] = await getPdfLibs();
     const doc = await PDFLib.PDFDocument.create();
     doc.registerFontkit(fontkit);
     const font = await doc.embedFont(await getFont(), { subset: true });
@@ -695,8 +714,11 @@ ${sections}
     state.fallback = null; state.fromBackup = 0;
     const list = info.chapters.slice(opts.from, opts.to + 1);
     const m = info.meta;
+    const range = list.length === info.chapters.length ? '' : ` (${list[0].volume}-${list[0].number}…${list.at(-1).volume}-${list.at(-1).number})`;
     const book = {
       slug,
+      range, // часть тайтла: идёт в название и id книги, чтобы читалки не путали разные диапазоны одного тайтла
+      uid: slug + (range ? ':' + encodeURIComponent(range.trim()) : ''),
       title: m.rus_name || m.name || m.eng_name || slug,
       author: (m.authors || []).map((a) => a.name).filter(Boolean).join(', '),
       description: typeof m.summary === 'string' ? m.summary
@@ -781,7 +803,6 @@ ${sections}
       if (images.length) { zip.add(`${safeName(book.title)}.txt`, txt); blob = zip.blob('application/zip'); ext = 'zip'; }
       else blob = new Blob([txt], { type: 'text/plain;charset=utf-8' });
     }
-    const range = list.length === info.chapters.length ? '' : ` (${list[0].volume}-${list[0].number}…${list.at(-1).volume}-${list.at(-1).number})`;
     return { blob, name: `${safeName(book.title)}${range}.${ext}`, errors };
   }
 
@@ -981,6 +1002,8 @@ ${sections}
   let rSeq = 0; // ответ старой главы не должен перерисовать новую
   const pageSlug = () => lost?.slug || parseSlug(location.pathname);
   addEventListener('click', (e) => { const a = e.target.closest?.('a[href]'); if (a) lastClick = a.href; }, true);
+  // «Назад»/«Вперёд»: адрес уже сменился, а уход на /404 ещё впереди — иначе открыли бы старый клик
+  addEventListener('popstate', () => { lastClick = location.href; });
 
   async function showLost() {
     const seq = ++rSeq, body = r$('.body');
