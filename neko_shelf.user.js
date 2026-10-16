@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NekoShelf
 // @namespace    https://github.com/Laynholt/neko_shelf
-// @version      1.3.0
+// @version      1.4.0
 // @description  Скачивание манги и ранобэ с MangaLIB / RanobeLIB / HentaiLIB / SlashLIB / ReManga / MangaBuff / IMHentai / Nude-Moon / nhentai в PDF, CBZ, ZIP, EPUB, FB2, TXT и HTML. Своя читалка там, где сайт без входа показывает 404. Основан на LibSaver (dfy-dpg).
 // @author       laynholt
 // @license      GPL-3.0
@@ -36,6 +36,10 @@
 // @match        https://*.nhentai.net/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM.xmlHttpRequest
+// @grant        GM_getValue
+// @grant        GM_setValue
+// @grant        GM.getValue
+// @grant        GM.setValue
 // @connect      imglib.info
 // @connect      cdnlibs.org
 // @connect      hentaicdn.org
@@ -225,7 +229,8 @@
 
   // Минимальный PDF «страница = картинка» для манги: JPEG вставляется как есть, данные сразу уходят в Blob
   class Pdf {
-    constructor() { this.parts = []; this.off = []; this.len = 0; this.pages = []; this.next = 3; this.put('%PDF-1.4\n%\xff\xff\xff\xff\n'); }
+    // sameWidth=false — каждая страница своего размера (только ограничение PDF по ширине)
+    constructor(sameWidth = true) { this.sameWidth = sameWidth; this.parts = []; this.off = []; this.len = 0; this.pages = []; this.next = 3; this.put('%PDF-1.4\n%\xff\xff\xff\xff\n'); }
     put(x) { const b = typeof x === 'string' ? enc(x) : x; this.parts.push(b instanceof Uint8Array ? new Blob([b]) : b); this.len += b.byteLength ?? b.size; }
     obj(id, dict, data) {
       this.off[id] = this.len;
@@ -246,7 +251,7 @@
       const f = (n) => +n.toFixed(2);
       const kids = [];
       for (const { img, w, h } of this.pages) {
-        const s = Math.min(common / w, MAX / w);
+        const s = Math.min(this.sameWidth ? common / w : 1, MAX / w);
         const pw = f(w * s), ph = h * s;
         // Длинную полосу (вебтун) не ужимаем, а режем на страницы одной ширины: та же картинка, сдвинутая вверх
         for (let y0 = 0; ph - y0 > 0.5; y0 += MAX) {
@@ -617,18 +622,31 @@
     }, pages);
   }
 
-  // nhentai: открытый JSON API. shortcut: написан по документации API без живой проверки — сайт не открывался для теста
+  // nhentai: старый /api/gallery/{id} отвечает 403, сайт перешёл на /api/v2/galleries/{id}.
+  // Если и он откажет (лимит, Cloudflare) — тот же JSON страница галереи встраивает в <script data-sveltekit-fetched>.
+  // shortcut: формат v2 взят из nhentai-helper (Tsuk1ko) без живой проверки — сайт не открывался для теста
   async function nhentaiTitle(id) {
-    const g = await retry(() => fetch(`/api/gallery/${id}`).then(checkedJson));
+    let g;
+    try {
+      g = await retry(() => fetch(`/api/v2/galleries/${id}`).then(checkedJson));
+    } catch (e) {
+      const s = (await getHtml(`/g/${id}/`)).querySelector('script[data-sveltekit-fetched][data-url^="/api/v2/galleries/"]');
+      if (!s) throw e;
+      g = JSON.parse(JSON.parse(s.textContent).body);
+    }
+    const mid = g.media_id;
+    // расширение: из пути страницы (v2) или из кода формата (старый API)
+    const ext = (p) => (p?.path ? p.path.split('.').pop() : EXT[p?.t]) || 'jpg';
     // картинки раздают несколько серверов с одинаковыми путями: если один не ответит, берём следующий
-    const hosts = ['i', 'i1', 'i2', 'i3', 'i4'].map((h) => `https://${h}.nhentai.net/galleries/${g.media_id}/`);
-    const pages = (g.images?.pages || []).map((p, i) => ({ urls: hosts.map((h) => `${h}${i + 1}.${EXT[p.t] || 'jpg'}`), width: p.w, height: p.h }));
-    const c = g.images?.cover;
+    const hosts = ['i1', 'i2', 'i3', 'i4', 'i5', 'i7', 'i'].map((h) => `https://${h}.nhentai.net`);
+    const file = (p, i) => (p.path?.includes('galleries/') ? '/' + p.path.replace(/^.*?galleries\//, 'galleries/') : `/galleries/${mid}/${p.number || i + 1}.${ext(p)}`);
+    const pages = (g.pages || g.images?.pages || []).map((p, i) => ({ urls: hosts.map((h) => h + file(p, i)), width: p.width || p.w, height: p.height || p.h }));
+    const c = g.cover || g.images?.cover;
     return gallery({
       title: g.title?.pretty || g.title?.english || g.title?.japanese || id,
       author: (g.tags || []).filter((t) => t.type === 'artist').map((t) => t.name).join(', '),
       description: '',
-      cover: c && `https://t.nhentai.net/galleries/${g.media_id}/cover.${EXT[c.t] || 'jpg'}`,
+      cover: c && `https://t.nhentai.net/galleries/${mid}/cover.${ext(c)}`,
     }, pages);
   }
 
@@ -905,8 +923,21 @@ ${sections}
 
   const state = { busy: false, cancel: false, fallback: null, fromBackup: 0 };
 
+  // Настройки общие для всех сайтов — в хранилище менеджера скриптов; без него — в localStorage текущего сайта
+  const settings = { sameWidth: true, cover: true };
+  const gmGetValue = typeof GM !== 'undefined' && GM.getValue ? GM.getValue.bind(GM) : typeof GM_getValue === 'function' ? async (k, d) => GM_getValue(k, d) : null;
+  const gmSetValue = typeof GM !== 'undefined' && GM.setValue ? GM.setValue.bind(GM) : typeof GM_setValue === 'function' ? async (k, v) => GM_setValue(k, v) : null;
+  const SETTINGS_KEY = 'neko-shelf-settings';
+  const settingsLoaded = (async () => {
+    try { Object.assign(settings, gmGetValue ? await gmGetValue(SETTINGS_KEY, {}) : JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}')); } catch { /* значения по умолчанию */ }
+  })();
+  async function saveSettings() {
+    try { gmSetValue ? await gmSetValue(SETTINGS_KEY, { ...settings }) : localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); } catch { /* не сохранилось — действует до перезагрузки */ }
+  }
+
   async function download(slug, info, opts, ui) {
     const fmt = opts.format;
+    await settingsLoaded;
     state.fallback = null; state.fromBackup = 0;
     const list = info.chapters.slice(opts.from, opts.to + 1);
     const m = info.meta;
@@ -921,7 +952,7 @@ ${sections}
     };
     const zip = new Zip();
     if (fmt === 'epub') zip.add('mimetype', 'application/epub+zip'); // EPUB требует mimetype первым файлом
-    const imagePdf = fmt === 'pdf' && site.kind === 'manga' ? new Pdf() : null;
+    const imagePdf = fmt === 'pdf' && site.kind === 'manga' ? new Pdf(settings.sameWidth) : null;
     const images = []; // EPUB/TXT: картинки-файлы {path, ext}
     const emb = []; // HTML/FB2: {ext, b64}; PDF ранобэ: {ext, buf}
     const done = [];
@@ -937,7 +968,7 @@ ${sections}
       switch (fmt) {
         case 'cbz':
           cbzWidth ??= common;
-          if (cbzWidth) try { ({ buf, ext } = await fitWidth(buf, ext, cbzWidth)); } catch { /* не смогли перекодировать — кладём как есть */ }
+          if (cbzWidth && settings.sameWidth) try { ({ buf, ext } = await fitWidth(buf, ext, cbzWidth)); } catch { /* не смогли перекодировать — кладём как есть */ }
           zip.add(`${pad(chap, 4)}-${pad(page + 1, 3)}.${ext}`, buf);
           return '';
         case 'zip': zip.add(`${pad(chap, 4)} ${safeName(chTitle)}/${pad(page + 1, 3)}.${ext}`, buf); return '';
@@ -954,7 +985,7 @@ ${sections}
 
     let cover = null;
     const addCover = async () => {
-      if (fmt === 'txt' || !m.cover) return;
+      if (fmt === 'txt' || !settings.cover || !m.cover) return;
       try {
         const c = await getImage([m.cover]);
         cover = await addImage(c.buf, c.ext, 0, 0, 'Обложка');
@@ -1021,9 +1052,20 @@ ${sections}
   [hidden]{display:none!important}
   .head{display:flex;align-items:center;gap:8px;margin-bottom:10px}
   h3{flex:1;margin:0;font-size:15px}
-  .info{flex:none;width:28px;height:28px;padding:0;border:1px solid #555;border-radius:50%;background:#2a2a2a;color:#ccc;font:bold 14px/1 Georgia,serif;cursor:pointer}
-  .info[aria-expanded="true"]{background:#e64a19;border-color:#e64a19;color:#fff}
-  .panel.about-open > :not(.head):not(.about){display:none!important}
+  .ibtn{flex:none;display:grid;place-items:center;width:28px;height:28px;padding:0;border:1px solid #555;border-radius:50%;background:#2a2a2a;color:#ccc;cursor:pointer}
+  .ibtn:hover,.ibtn:focus-visible{border-color:#888;color:#fff}
+  .ibtn svg{width:15px;height:15px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+  .cfg[aria-expanded="true"]{background:#e64a19;border-color:#e64a19;color:#fff}
+  .panel.settings-open > :not(.head):not(.settings){display:none!important}
+  .panel.settings-open .edit{display:none}
+  .rename{flex:1;min-width:0;box-sizing:border-box;padding:4px 8px;border:1px solid #66bb6a;border-radius:6px;background:#2a2a2a;color:#eee;font-family:inherit;font-size:15px;font-weight:600}
+  .tabs{display:flex;gap:4px;margin-bottom:12px;padding:3px;border-radius:9px;background:#151515}
+  .tabs button{flex:1;padding:7px 6px;border:0;border-radius:7px;background:none;color:#aaa;font-size:13px;cursor:pointer}
+  .tabs button[aria-selected="true"]{background:#2f2f2f;color:#fff;box-shadow:0 1px 3px #0006}
+  .opt{display:flex;gap:10px;align-items:flex-start;margin:0 0 8px;padding:10px;border:1px solid #333;border-radius:8px;background:#262626;color:#eee;font-size:13px;cursor:pointer}
+  .opt input{flex:none;width:18px;height:18px;margin:1px 0 0;accent-color:#66bb6a;cursor:pointer}
+  .opt small{display:block;margin-top:3px;color:#888;font-size:11px}
+  .hint{margin:4px 2px 0;font-size:11px;color:#777}
   .hero{display:flex;align-items:center;gap:12px;padding:12px;border-radius:10px;background:linear-gradient(135deg,#2d2540,#1d2b28)}
   .hero img{width:52px;height:52px;flex:none;filter:drop-shadow(0 2px 4px #0006)}
   .hero b{display:block;font-size:18px;letter-spacing:.2px}
@@ -1054,8 +1096,19 @@ ${sections}
   a{color:#ff8a65}
 </style>
 <div class="panel" hidden>
-  <div class="head"><h3 class="title">NekoShelf</h3><button class="info" title="О скрипте" aria-label="О скрипте" aria-expanded="false">i</button></div>
-  <div class="about" hidden>
+  <div class="head">
+    <h3 class="title">NekoShelf</h3>
+    <button class="ibtn edit" hidden title="Переименовать тайтл" aria-label="Переименовать тайтл"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20h4L19 9l-4-4L4 16zM13.5 6.5l4 4"/></svg></button>
+    <button class="ibtn cfg" title="Настройки" aria-label="Настройки" aria-expanded="false"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3.2"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.3 5.3l2.1 2.1M16.6 16.6l2.1 2.1M5.3 18.7l2.1-2.1M16.6 7.4l2.1-2.1"/></svg></button>
+  </div>
+  <div class="settings" hidden>
+    <div class="tabs" role="tablist"><button role="tab" data-tab="dl" aria-selected="true">Скачивание</button><button role="tab" data-tab="about" aria-selected="false">О скрипте</button></div>
+    <div class="tab" data-tab="dl" role="tabpanel">
+      <label class="opt"><input type="checkbox" data-key="sameWidth"><span>Одинаковая ширина страниц<small>PDF и CBZ: страницы приводятся к самой частой ширине — широкие ужимаются, узкие растягиваются. Выключите, чтобы оставить исходные размеры.</small></span></label>
+      <label class="opt"><input type="checkbox" data-key="cover"><span>Обложка первой страницей<small>Во всех форматах, кроме TXT.</small></span></label>
+      <p class="hint">Сохраняется сразу и действует на всех сайтах.</p>
+    </div>
+    <div class="tab" data-tab="about" role="tabpanel" hidden>
     <div class="hero"><img src="${ICON}" alt=""><div><b>NekoShelf</b><span class="pill ver"></span></div></div>
     <p class="tagline">Скачивание манги, манхвы и ранобэ одним файлом прямо со страницы тайтла.</p>
     <div class="links">
@@ -1064,6 +1117,7 @@ ${sections}
       <a class="bug" href="${REPO}/issues/new?template=bug_report.yml" target="_blank" rel="noopener"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v3M8 6h8a2 2 0 0 1 2 2v6a6 6 0 0 1-12 0V8a2 2 0 0 1 2-2zM3 10h3M18 10h3M3 16h3M18 16h3M12 11v8"/></svg><span>Сообщить об ошибке<small>форма с уже заполненной версией и браузером</small></span></a>
     </div>
     <p class="credit">Автор laynholt · основан на LibSaver (dfy-dpg) · GPL-3.0</p>
+    </div>
   </div>
   <div class="form" hidden>
     <label>Перевод</label><select class="branch"></select>
@@ -1080,14 +1134,47 @@ ${sections}
   const $ = (s) => root.querySelector(s);
   const panel = $('.panel');
   $('.ver').textContent = VERSION && 'v' + VERSION;
-  // «О скрипте» закрывает собой остальное содержимое панели; потом сюда же лягут настройки
-  $('.info').addEventListener('click', () => {
-    const open = panel.classList.toggle('about-open');
-    $('.info').setAttribute('aria-expanded', open);
-    $('.about').hidden = !open;
-    // форма ошибки сразу с версией, страницей и браузером — правится перед отправкой
-    if (open) $('.bug').href = `${REPO}/issues/new?` + new URLSearchParams({ template: 'bug_report.yml', version: VERSION, page: location.href, browser: navigator.userAgent });
+  // Шестерёнка: настройки и «О скрипте» во вкладках, закрывают собой остальное содержимое панели
+  $('.cfg').addEventListener('click', async () => {
+    const open = panel.classList.toggle('settings-open');
+    $('.cfg').setAttribute('aria-expanded', open);
+    $('.settings').hidden = !open;
+    if (open) {
+      // форма ошибки сразу с версией, страницей и браузером — правится перед отправкой
+      $('.bug').href = `${REPO}/issues/new?` + new URLSearchParams({ template: 'bug_report.yml', version: VERSION, page: location.href, browser: navigator.userAgent });
+      await settingsLoaded;
+      for (const cb of root.querySelectorAll('.opt input')) cb.checked = !!settings[cb.dataset.key];
+    }
     positionPanel();
+  });
+  for (const cb of root.querySelectorAll('.opt input')) cb.addEventListener('change', () => { settings[cb.dataset.key] = cb.checked; saveSettings(); });
+  for (const t of root.querySelectorAll('[role=tab]')) {
+    t.addEventListener('click', () => {
+      for (const x of root.querySelectorAll('[role=tab]')) x.setAttribute('aria-selected', x === t);
+      for (const p of root.querySelectorAll('.tab')) p.hidden = p.dataset.tab !== t.dataset.tab;
+      positionPanel();
+    });
+  }
+  // Карандаш: своё название тайтла для файла и его метаданных (до перезагрузки страницы)
+  $('.edit').addEventListener('click', () => {
+    const h = $('.title'), input = document.createElement('input');
+    input.className = 'rename';
+    input.value = current.info.meta.title;
+    input.setAttribute('aria-label', 'Название тайтла');
+    h.hidden = true; $('.edit').hidden = true;
+    h.after(input);
+    input.focus(); input.select();
+    let finished = false;
+    const finish = (save) => {
+      if (finished) return;
+      finished = true;
+      const v = input.value.trim();
+      if (save && v) h.textContent = current.info.meta.title = v;
+      input.remove();
+      h.hidden = false; $('.edit').hidden = false;
+    };
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') finish(true); else if (e.key === 'Escape') finish(false); });
+    input.addEventListener('blur', () => finish(true));
   });
   // Панель открывается у кнопки: под ней, если кнопка в верхней половине экрана, иначе над ней;
   // прижата к той же стороне, что и кнопка. Привязка по top/bottom — чтобы рост панели шёл от кнопки.
@@ -1128,11 +1215,13 @@ ${sections}
     const slug = pageSlug();
     if (current?.slug === slug) return;
     $('.form').hidden = true;
+    $('.edit').hidden = true;
     ui.status('Загружаю список глав…');
     try {
       const info = await loadTitle(slug);
       current = { slug, info };
       $('.title').textContent = info.meta.title;
+      $('.edit').hidden = false;
       const opts = info.chapters.map((ch, i) => `<option value="${i}">${esc(chapterLabel(ch))}</option>`).join('');
       $('.from').innerHTML = opts;
       $('.to').innerHTML = opts;
