@@ -33,9 +33,13 @@
 | [SlashLIB](https://v2.shlib.life) | манга |
 | [ReManga](https://remanga.org) | манга, манхва, маньхуа (платные главы — только купленные) |
 | [MangaBuff](https://mangabuff.ru) | манга, манхва, маньхуа |
+| [MangaDex](https://mangadex.org) | манга, манхва, маньхуа; выбор языка и команды перевода |
+| [Dynasty Scans](https://dynasty-scans.com) | серии, ваншоты, отдельные арты и подборки артов |
+| [LilyManga](https://lilymanga.net) | манхва, манга |
+| [Yurivan](https://www.yurivan.com) | истории и арты (18+, нужно подтвердить возраст на сайте) |
 | [IMHentai](https://imhentai.xxx) | галереи (18+) |
 | [Nude-Moon](https://nude-moon.org) | галереи (18+) |
-| [nhentai](https://nhentai.net) | галереи (18+), поддержка экспериментальная |
+| [nhentai](https://nhentai.net) | галереи (18+) |
 
 ## Установка
 
