@@ -1,0 +1,95 @@
+name: Сообщить об ошибке
+description: Что-то не скачивается, не открывается или работает не так
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Спасибо, что сообщаете об ошибке! Если открыли форму из панели NekoShelf (кнопка «i» → «Сообщить об ошибке»),
+        версия, страница и браузер уже заполнены — проверьте их и уберите из адреса страницы то, чем не хотите делиться.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Что случилось
+      description: Коротко опишите проблему и текст ошибки из панели, если он был.
+      placeholder: Например — «PDF скачался, но глава 12 пустая; в панели: Ошибки (1): Том 1 Глава 12: HTTP 403»
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Как повторить
+      description: Шаги, после которых ошибка появляется снова.
+      placeholder: |
+        1. Открыть страницу тайтла …
+        2. Нажать на кнопку NekoShelf
+        3. Выбрать главы 1–5, формат PDF, нажать «Скачать»
+        4. …
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Что ожидалось
+      placeholder: Файл со всеми выбранными главами.
+
+  - type: input
+    id: page
+    attributes:
+      label: Страница
+      description: Адрес тайтла или главы, на которой воспроизводится ошибка.
+      placeholder: https://mangalib.me/ru/manga/…
+    validations:
+      required: true
+
+  - type: dropdown
+    id: format
+    attributes:
+      label: Формат файла
+      options: [PDF, CBZ, ZIP, EPUB, FB2, TXT, HTML, Не связано со скачиванием]
+
+  - type: input
+    id: version
+    attributes:
+      label: Версия NekoShelf
+      placeholder: 1.2.0
+    validations:
+      required: true
+
+  - type: dropdown
+    id: manager
+    attributes:
+      label: Менеджер скриптов
+      options: [Violentmonkey, Tampermonkey, Userscripts (iPhone / iPad), Другой]
+    validations:
+      required: true
+
+  - type: input
+    id: browser
+    attributes:
+      label: Браузер и система
+      description: Например — «Chrome 141, Windows 11» или «Safari, iOS 26».
+    validations:
+      required: true
+
+  - type: dropdown
+    id: account
+    attributes:
+      label: Вход в аккаунт на сайте
+      options: [Не выполнен, Выполнен]
+
+  - type: textarea
+    id: screenshots
+    attributes:
+      label: Скриншоты
+      description: Перетащите сюда скриншоты панели NekoShelf и страницы — они очень помогают.
+
+  - type: textarea
+    id: console
+    attributes:
+      label: Ошибки из консоли браузера (необязательно)
+      description: На компьютере — F12 → вкладка Console; скопируйте красные строки.
+      render: text
