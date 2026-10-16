@@ -2,7 +2,7 @@
 // @name         NekoShelf
 // @namespace    https://github.com/Laynholt/neko_shelf
 // @version      1.0.2
-// @description  Скачивание манги и ранобэ с MangaLIB / RanobeLIB / HentaiLIB / SlashLIB в PDF, CBZ, ZIP, EPUB, FB2, TXT и HTML. Своя читалка там, где сайт без входа показывает 404. Основан на LibSaver (dfy-dpg).
+// @description  Скачивание манги и ранобэ с MangaLIB / RanobeLIB / HentaiLIB / SlashLIB / ReManga / MangaBuff в PDF, CBZ, ZIP, EPUB, FB2, TXT и HTML. Своя читалка там, где сайт без входа показывает 404. Основан на LibSaver (dfy-dpg).
 // @author       laynholt
 // @license      GPL-3.0
 // @homepageURL  https://github.com/Laynholt/neko_shelf
@@ -24,6 +24,10 @@
 // @match        https://*.hentailib.org/*
 // @match        https://shlib.life/*
 // @match        https://*.shlib.life/*
+// @match        https://remanga.org/*
+// @match        https://*.remanga.org/*
+// @match        https://mangabuff.ru/*
+// @match        https://*.mangabuff.ru/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM.xmlHttpRequest
 // @connect      imglib.info
@@ -36,6 +40,8 @@
 // @connect      hentailib.me
 // @connect      hentailib.org
 // @connect      shlib.life
+// @connect      reimg2.org
+// @connect      mangabuff.ru
 // @connect      cdn.jsdelivr.net
 // @run-at       document-start
 // @noframes
@@ -48,11 +54,14 @@
   'use strict';
 
   const SITES = [
-    { re: /(^|\.)(ranobelib|novelslib)\.me$/, kind: 'ranobe', siteId: 3, api: 'https://api.cdnlibs.org', img: [] },
-    { re: /(^|\.)mangalib\.(me|org)$/, kind: 'manga', siteId: 1, api: 'https://api.cdnlibs.org', img: ['https://img3.cdnlibs.org', 'https://img2.imglib.info'] },
-    { re: /(^|\.)hentailib\.(me|org)$/, kind: 'manga', siteId: 4, api: 'https://hapi.hentaicdn.org', img: ['https://img3h.hentaicdn.org', 'https://img2h.hentaicdn.org'] },
+    // type — какой адаптер берёт данные (см. «адаптеры сайтов»)
+    { re: /(^|\.)(ranobelib|novelslib)\.me$/, type: 'lib', kind: 'ranobe', siteId: 3, api: 'https://api.cdnlibs.org', img: [] },
+    { re: /(^|\.)mangalib\.(me|org)$/, type: 'lib', kind: 'manga', siteId: 1, api: 'https://api.cdnlibs.org', img: ['https://img3.cdnlibs.org', 'https://img2.imglib.info'] },
+    { re: /(^|\.)hentailib\.(me|org)$/, type: 'lib', kind: 'manga', siteId: 4, api: 'https://hapi.hentaicdn.org', img: ['https://img3h.hentaicdn.org', 'https://img2h.hentaicdn.org'] },
     // как в оригинале: метаданные SlashLIB с Site-Id 2, главы и страницы с Site-Id 4
-    { re: /(^|\.)shlib\.life$/, kind: 'manga', siteId: 2, chapSiteId: 4, api: 'https://hapi.hentaicdn.org', img: ['https://img3.hentaicdn.org', 'https://img2.hentaicdn.org'] },
+    { re: /(^|\.)shlib\.life$/, type: 'lib', kind: 'manga', siteId: 2, chapSiteId: 4, api: 'https://hapi.hentaicdn.org', img: ['https://img3.hentaicdn.org', 'https://img2.hentaicdn.org'] },
+    { re: /(^|\.)remanga\.org$/, type: 'remanga', kind: 'manga' },
+    { re: /(^|\.)mangabuff\.ru$/, type: 'mangabuff', kind: 'manga' },
   ];
   // Набор как в оригинале; первый — по умолчанию (манга — PDF, ранобэ — TXT)
   const FORMATS = { ranobe: ['txt', 'epub', 'fb2', 'pdf', 'html'], manga: ['pdf', 'cbz', 'zip', 'epub', 'html'] };
@@ -262,7 +271,7 @@
   const gmXhr = typeof GM !== 'undefined' && GM.xmlHttpRequest ? GM.xmlHttpRequest.bind(GM)
     : typeof GM_xmlhttpRequest === 'function' ? GM_xmlhttpRequest : null;
 
-  const GM_HOSTS = /(^|\.)(cdnlibs\.org|imglib\.info|hentaicdn\.org|mangalib\.(me|org)|ranobelib\.me|novelslib\.me|hentailib\.(me|org)|shlib\.life|cdn\.jsdelivr\.net)$/;
+  const GM_HOSTS = /(^|\.)(cdnlibs\.org|imglib\.info|hentaicdn\.org|mangalib\.(me|org)|ranobelib\.me|novelslib\.me|hentailib\.(me|org)|shlib\.life|reimg2\.org|mangabuff\.ru|cdn\.jsdelivr\.net)$/;
   function gmGet(url, responseType, headers) {
     return new Promise((resolve, reject) => {
       if (!gmXhr) return reject(new Error('менеджер скриптов не дал GM.xmlHttpRequest'));
@@ -414,11 +423,23 @@
   let fontBytes;
   const getFont = async () => fontBytes || (fontBytes = await retry(() => gmGet(FONT_URL, 'arraybuffer'), 3));
 
-  // ---------- загрузка тайтла ----------
+  // ---------- адаптеры сайтов ----------
+  // Адаптер = [title(slug), chapter(slug, ch, branch)]:
+  //   title   -> { meta: { title, author, description, cover }, chapters: [{ volume, number, name, branches }], branches: Map(id -> команда) }
+  //   chapter -> манга: { pages: [{ urls: [адрес, запасные…], width? }] }; ранобэ — ответ API Lib (content, attachments)
 
-  async function loadTitle(slug) {
+  // Перевод, выбранный в панели (или первый доступный)
+  function pickBranch(ch, wanted) {
+    const bs = ch.branches || [];
+    return bs.find((x) => String(x.branch_id) === wanted) || bs[0];
+  }
+  const byNumber = (a, b) => a.volume - b.volume || a.number - b.number;
+  const checkedJson = (r) => (r.ok ? r.json() : Promise.reject(Object.assign(new Error(`API ${r.status}`), { status: r.status })));
+
+  // Lib (MangaLIB, RanobeLIB, HentaiLIB, SlashLIB)
+  async function libTitle(slug) {
     const fields = ['eng_name', 'otherNames', 'summary', 'authors', 'releaseDate'].map((f) => `fields[]=${f}`).join('&');
-    const [meta, chapters] = await Promise.all([
+    const [m, chapters] = await Promise.all([
       api(`/api/manga/${slug}?${fields}`),
       api(`/api/manga/${slug}/chapters`, site.chapSiteId),
     ]);
@@ -428,28 +449,112 @@
         if (!branches.has(String(b.branch_id))) branches.set(String(b.branch_id), (b.teams || []).map((t) => t.name).join(', ') || 'Без команды');
       }
     }
+    const meta = {
+      title: m.rus_name || m.name || m.eng_name || slug,
+      author: (m.authors || []).map((a) => a.name).filter(Boolean).join(', '),
+      description: typeof m.summary === 'string' ? m.summary
+        : (m.summary?.content || []).map((p) => (p.content || []).map((t) => t.text || '').join('')).join('\n\n'),
+      cover: m.cover?.default,
+    };
     return { meta, chapters, branches };
   }
 
-  function pickBranch(ch, wanted) {
-    const bs = ch.branches || [];
-    const b = bs.find((x) => String(x.branch_id) === wanted) || bs[0];
-    return b && b.branch_id != null ? `&branch_id=${b.branch_id}` : '';
-  }
-
-  async function chapterData(slug, ch, branch) {
-    const data = await api(`/api/manga/${slug}/chapter?number=${encodeURIComponent(ch.number)}&volume=${encodeURIComponent(ch.volume)}${pickBranch(ch, branch)}`, site.chapSiteId);
+  async function libChapter(slug, ch, branch) {
+    const b = pickBranch(ch, branch);
+    const data = await api(`/api/manga/${slug}/chapter?number=${encodeURIComponent(ch.number)}&volume=${encodeURIComponent(ch.volume)}${b && b.branch_id != null ? `&branch_id=${b.branch_id}` : ''}`, site.chapSiteId);
     const d = Array.isArray(data) ? data[0] : data;
     if (!d) throw new Error('пустой ответ');
-    return d;
+    if (site.kind !== 'manga') return d;
+    // для каждой страницы — адреса по серверам картинок
+    const servers = await getImageServers();
+    return { pages: (d.pages || []).map((p) => ({ width: p.width, height: p.height, urls: /^https?:/.test(p.url) ? [p.url] : servers.map((s) => s + p.url.replace(/^\/+/, '/')) })) };
   }
 
-  // Страницы манги: для каждой — список адресов (по серверам картинок)
-  async function pageUrls(d) {
-    const servers = await getImageServers();
-    const pages = d.pages || [];
-    if (!pages.length) throw new Error('нет страниц (платная или удалённая глава?)');
-    return pages.map((p) => (/^https?:/.test(p.url) ? [p.url] : servers.map((s) => s + p.url.replace(/^\/+/, '/'))));
+  // ReManga: открытый JSON API, картинки на CDN с CORS
+  const rmGet = (path) => retry(() => fetch('https://api.remanga.org/api/v2' + path).then(checkedJson));
+  async function remangaTitle(slug) {
+    const t = await rmGet(`/titles/${slug}/`);
+    const byKey = new Map(); // «том|глава» -> глава со всеми переводами
+    const branches = new Map();
+    for (const b of t.branches || []) {
+      branches.set(String(b.id), (b.publishers || []).map((p) => p.name).join(', ') || 'Без команды');
+      for (let page = 1; ; page++) {
+        const r = await rmGet(`/titles/chapters/?branch_id=${b.id}&ordering=index&page=${page}&count=40`);
+        for (const c of r.results || []) {
+          const key = `${c.tome}|${c.chapter}`;
+          if (!byKey.has(key)) byKey.set(key, { volume: String(c.tome), number: String(c.chapter), name: c.name || '', branches: [] });
+          byKey.get(key).branches.push({ branch_id: b.id, id: c.id, paid: c.is_paid && !c.is_bought });
+        }
+        if (!r.next) break;
+      }
+    }
+    const chapters = [...byKey.values()].sort(byNumber);
+    // платные главы оставляем в списке, но помечаем — скачать их без покупки нельзя
+    for (const ch of chapters) if (ch.branches.every((b) => b.paid)) ch.name = `${ch.name} [платная]`.trim();
+    const desc = new DOMParser().parseFromString(t.description || '', 'text/html').body;
+    const meta = {
+      title: t.main_name || t.secondary_name || slug,
+      author: '',
+      description: [...desc.children].map((p) => p.textContent.trim()).filter(Boolean).join('\n\n') || desc.textContent.trim(),
+      cover: t.cover?.high && new URL(t.cover.high, location.origin).href,
+    };
+    return { meta, chapters, branches };
+  }
+
+  async function remangaChapter(slug, ch, branch) {
+    const b = pickBranch(ch, branch);
+    if (b.paid) throw new Error('платная глава');
+    const d = await rmGet(`/titles/chapters/${b.id}/`);
+    // длинные страницы сайт режет на куски: pages — массив массивов
+    return { pages: (d.pages || []).flat().map((p) => ({ urls: [p.link], width: p.width, height: p.height })) };
+  }
+
+  // MangaBuff: API нет — список глав и страницы берём из HTML сайта
+  const getHtml = async (url, init) => new DOMParser().parseFromString(
+    await retry(() => fetch(url, init).then((r) => (r.ok ? r.text() : Promise.reject(Object.assign(new Error('HTTP ' + r.status), { status: r.status }))))),
+    'text/html');
+  const abs = (u) => u && new URL(u, location.origin).href;
+  async function mangabuffTitle(slug) {
+    const doc = await getHtml(`/manga/${slug}`);
+    const items = [...doc.querySelectorAll('.chapters__item')];
+    // на странице только последние ~100 глав, остальные сайт подгружает этим запросом
+    const id = doc.querySelector('.manga[data-id]')?.dataset.id;
+    const csrf = doc.querySelector('meta[name=csrf-token]')?.content;
+    if (id && csrf) {
+      const r = await retry(() => fetch('/chapters/load', {
+        method: 'POST',
+        headers: { 'X-CSRF-TOKEN': csrf, 'X-Requested-With': 'XMLHttpRequest', 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' },
+        body: 'manga_id=' + encodeURIComponent(id),
+      }).then(checkedJson));
+      items.push(...new DOMParser().parseFromString(r.content || '', 'text/html').querySelectorAll('.chapters__item'));
+    }
+    const seen = new Set();
+    const chapters = items.filter((a) => !seen.has(a.getAttribute('href')) && seen.add(a.getAttribute('href'))).map((a) => ({
+      volume: a.querySelector('.chapters__volume span')?.textContent.trim() || '1',
+      number: a.querySelector('.chapters__value span')?.textContent.trim() || a.dataset.chapter,
+      name: a.querySelector('.chapters__name')?.textContent.trim() || '',
+      url: abs(a.getAttribute('href')),
+    })).sort(byNumber);
+    const meta = {
+      title: doc.querySelector('.manga__name')?.textContent.trim() || slug,
+      author: '',
+      description: doc.querySelector('.manga__description')?.textContent.trim() || '',
+      cover: abs((doc.querySelector('.manga__img img') || doc.querySelector('.manga__poster img'))?.getAttribute('src')),
+    };
+    return { meta, chapters, branches: new Map() };
+  }
+
+  async function mangabuffChapter(slug, ch) {
+    const doc = await getHtml(ch.url);
+    return { pages: [...doc.querySelectorAll('.reader__item img')].map((i) => ({ urls: [abs(i.getAttribute('data-src') || i.getAttribute('src'))] })) };
+  }
+
+  const ADAPTERS = { lib: [libTitle, libChapter], remanga: [remangaTitle, remangaChapter], mangabuff: [mangabuffTitle, mangabuffChapter] };
+  const loadTitle = (slug) => ADAPTERS[site.type][0](slug);
+  async function chapterData(slug, ch, branch) {
+    const d = await ADAPTERS[site.type][1](slug, ch, branch);
+    if (site.kind === 'manga' && !d.pages?.length) throw new Error('нет страниц (платная или удалённая глава?)');
+    return d;
   }
 
   // Текст главы ранобэ -> DOM с картинками-вложениями
@@ -492,7 +597,7 @@
 
     if (site.kind === 'manga') {
       const got = [];
-      await pool(await pageUrls(d), 3, async (urls, i) => {
+      await pool(d.pages.map((p) => p.urls), 3, async (urls, i) => {
         got[i] = await getImage(urls);
         onImage();
       });
@@ -724,10 +829,9 @@ ${sections}
       slug,
       range, // часть тайтла: идёт в название и id книги, чтобы читалки не путали разные диапазоны одного тайтла
       uid: slug + (range ? ':' + encodeURIComponent(range.trim()) : ''),
-      title: m.rus_name || m.name || m.eng_name || slug,
-      author: (m.authors || []).map((a) => a.name).filter(Boolean).join(', '),
-      description: typeof m.summary === 'string' ? m.summary
-        : (m.summary?.content || []).map((p) => (p.content || []).map((t) => t.text || '').join('')).join('\n\n'),
+      title: m.title,
+      author: m.author,
+      description: m.description,
     };
     const zip = new Zip();
     if (fmt === 'epub') zip.add('mimetype', 'application/epub+zip'); // EPUB требует mimetype первым файлом
@@ -764,9 +868,9 @@ ${sections}
 
     let cover = null;
     const addCover = async () => {
-      if (fmt === 'txt' || !m.cover?.default) return;
+      if (fmt === 'txt' || !m.cover) return;
       try {
-        const c = await getImage([m.cover.default]);
+        const c = await getImage([m.cover]);
         cover = await addImage(c.buf, c.ext, 0, 0, 'Обложка');
         if (fmt === 'epub') cover = images.at(-1);
       } catch { /* без обложки */ }
@@ -901,7 +1005,7 @@ ${sections}
     try {
       const info = await loadTitle(slug);
       current = { slug, info };
-      $('.title').textContent = info.meta.rus_name || info.meta.name || slug;
+      $('.title').textContent = info.meta.title;
       const opts = info.chapters.map((ch, i) => `<option value="${i}">${esc(chapterLabel(ch))}</option>`).join('');
       $('.from').innerHTML = opts;
       $('.to').innerHTML = opts;
@@ -1020,7 +1124,7 @@ ${sections}
       if (seq !== rSeq) return;
       const { meta, chapters } = rTitle;
       const i = lost.read ? chapters.findIndex((ch) => sameNum(ch.volume, lost.read.volume) && sameNum(ch.number, lost.read.number)) : -1;
-      r$('b').textContent = meta.rus_name || meta.name || lost.slug;
+      r$('b').textContent = meta.title;
       r$('.sel').innerHTML = '<option value="">Список глав</option>' + chapters.map((ch, k) => `<option value="${k}">${esc(chapterLabel(ch))}</option>`).join('');
       r$('.sel').value = i < 0 ? '' : String(i);
       r$('.prev').disabled = i <= 0;
@@ -1032,7 +1136,7 @@ ${sections}
       }
       const d = await chapterData(lost.slug, chapters[i], lost.bid);
       if (site.kind === 'manga') {
-        const all = await pageUrls(d);
+        const all = d.pages.map((p) => p.urls);
         if (seq !== rSeq) return;
         body.replaceChildren(...all.map((urls, k) => {
           const img = new Image(), p = d.pages[k];
@@ -1089,7 +1193,7 @@ ${sections}
   // Сайт — SPA: следим за адресом после каждой перерисовки — читалка встаёт до того, как 404 успеет показаться.
   // Кнопку показываем только на странице тайтла (или в читалке)
   function check() {
-    const is404 = location.pathname.endsWith('/404');
+    const is404 = site.type === 'lib' && location.pathname.endsWith('/404'); // уводят на 404 гостей только сайты Lib
     if (is404 && !lost && location.href !== shut) {
       lost = parseLost(lastClick || performance.getEntriesByType('navigation')[0]?.name);
       if (lost) { history.replaceState(history.state, '', lost.href); showLost(); }
