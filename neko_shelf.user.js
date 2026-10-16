@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NekoShelf
 // @namespace    https://github.com/Laynholt/neko_shelf
-// @version      1.0.2
+// @version      1.1.0
 // @description  Скачивание манги и ранобэ с MangaLIB / RanobeLIB / HentaiLIB / SlashLIB / ReManga / MangaBuff в PDF, CBZ, ZIP, EPUB, FB2, TXT и HTML. Своя читалка там, где сайт без входа показывает 404. Основан на LibSaver (dfy-dpg).
 // @author       laynholt
 // @license      GPL-3.0
