@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NekoShelf
 // @namespace    https://github.com/Laynholt/neko_shelf
-// @version      1.6.2
+// @version      1.7.0
 // @description  Скачивание манги, манхвы и ранобэ с MangaLIB, RanobeLIB, HentaiLIB, SlashLIB, ReManga, MangaBuff, MangaDex, Dynasty Scans, LilyManga, Yurivan, IMHentai, Nude-Moon, nhentai в PDF, CBZ, ZIP, EPUB, FB2, TXT и HTML. Своя читалка там, где сайт без входа показывает 404. Основан на LibSaver (dfy-dpg).
 // @author       laynholt
 // @license      GPL-3.0
@@ -261,7 +261,7 @@
       this.obj(img, `<</Type/XObject/Subtype/Image/Width ${w}/Height ${h}/ColorSpace/${c === 1 ? 'DeviceGray' : 'DeviceRGB'}/BitsPerComponent 8/Filter/DCTDecode/Length ${bytes.length}>>`, bytes);
       this.pages.push({ img, w, h, fit });
     }
-    blob(title) {
+    blob(meta = {}) { // meta: { title, author, subject, keywords }
       // Все страницы приводим к самой частой ширине (широкие ужимаем, узкие растягиваем) с сохранением пропорций.
       // Это только масштаб страницы в PDF: пиксели картинки не пересжимаются.
       const common = mostCommon(this.pages.map((p) => p.w));
@@ -281,11 +281,13 @@
           kids.push(page);
         }
       }
-      const t = title ? `/Title<FEFF${[...String(title)].map((ch) => { const p = ch.codePointAt(0); return p > 0xffff ? '' : pad(p.toString(16), 4); }).join('')}>` : '';
+      // свойства документа (видны в «Свойствах» читалки): строки UTF-16BE в hex — так PDF понимает кириллицу
+      const str = (s) => `<FEFF${[...String(s)].map((ch) => { const p = ch.codePointAt(0); return p > 0xffff ? '' : pad(p.toString(16), 4); }).join('')}>`;
+      const props = Object.entries({ Title: meta.title, Author: meta.author, Subject: meta.subject, Keywords: meta.keywords }).filter(([, v]) => v).map(([k, v]) => `/${k}${str(v)}`).join('');
       this.obj(1, '<</Type/Catalog/Pages 2 0 R>>');
       this.obj(2, `<</Type/Pages/Kids[${kids.map((k) => k + ' 0 R').join(' ')}]/Count ${kids.length}>>`);
       const info = this.next;
-      this.obj(info, `<<${t}/Producer(NekoShelf userscript)>>`);
+      this.obj(info, `<<${props}/Producer(NekoShelf userscript)>>`);
       const xref = this.len;
       let x = `xref\n0 ${info + 1}\n0000000000 65535 f \n`;
       for (let i = 1; i <= info; i++) x += `${pad(this.off[i], 10)} 00000 n \n`;
@@ -294,8 +296,18 @@
     }
   }
 
+  // Сведения о тайтле для блока «О тайтле»: [подпись, значение], только заполненные
+  function infoRows(b) {
+    const list = (a) => [].concat(a || []).filter(Boolean).join(', ');
+    return [
+      ['Название', b.title], ['Другие названия', list(b.alt)], ['Автор', b.author], ['Художник', b.artist], ['Тип', b.type],
+      ['Год', b.year], ['Статус', b.status], ['Возраст', b.age], ['Жанры', list(b.genres)], ['Теги', list(b.tags)],
+      ['Издатель', b.publisher], ['Перевод', b.translator], ['Источник', b.url],
+    ].filter(([, v]) => v);
+  }
+
   if (typeof module === 'object' && module.exports) {
-    module.exports = { findJwt, pmToHtml, sniffExt, jpegInfo, parseSlug, parseLost, sameNum, chapterLabel, esc, safeName, mostCommon, crc32, Zip, Pdf };
+    module.exports = { findJwt, pmToHtml, sniffExt, jpegInfo, parseSlug, parseLost, sameNum, chapterLabel, esc, safeName, mostCommon, crc32, infoRows, Zip, Pdf };
     return;
   }
 
@@ -479,11 +491,15 @@
     return bs.find((x) => String(x.branch_id) === wanted) || bs[0];
   }
   const byNumber = (a, b) => a.volume - b.volume || a.number - b.number;
+  // сведения о тайтле: имена из списка объектов, год из строки вида «2017 г.», другие названия без дублей и основного
+  const names = (a) => (a || []).map((x) => x?.name).filter(Boolean);
+  const yearOf = (s) => String(s ?? '').match(/\d{4}/)?.[0] || '';
+  const otherTitles = (title, list) => [...new Set(list.map((x) => String(x ?? '').trim()).filter((x) => x && x !== title))];
   const checkedJson = (r) => (r.ok ? r.json() : Promise.reject(Object.assign(new Error(`API ${r.status}`), { status: r.status })));
 
   // Lib (MangaLIB, RanobeLIB, HentaiLIB, SlashLIB)
   async function libTitle(slug) {
-    const fields = ['eng_name', 'otherNames', 'summary', 'authors', 'releaseDate'].map((f) => `fields[]=${f}`).join('&');
+    const fields = ['eng_name', 'otherNames', 'summary', 'authors', 'artists', 'releaseDate', 'genres', 'tags', 'publisher'].map((f) => `fields[]=${f}`).join('&');
     const [m, chapters] = await Promise.all([
       api(`/api/manga/${slug}?${fields}`),
       api(`/api/manga/${slug}/chapters`, site.chapSiteId),
@@ -494,12 +510,17 @@
         if (!branches.has(String(b.branch_id))) branches.set(String(b.branch_id), (b.teams || []).map((t) => t.name).join(', ') || 'Без команды');
       }
     }
+    const title = m.rus_name || m.name || m.eng_name || slug;
     const meta = {
-      title: m.rus_name || m.name || m.eng_name || slug,
-      author: (m.authors || []).map((a) => a.name).filter(Boolean).join(', '),
+      title,
+      alt: otherTitles(title, [m.eng_name, m.name, ...(m.otherNames || [])]),
+      author: names(m.authors).join(', '),
+      artist: names(m.artists).join(', '),
       description: typeof m.summary === 'string' ? m.summary
         : (m.summary?.content || []).map((p) => (p.content || []).map((t) => t.text || '').join('')).join('\n\n'),
       cover: m.cover?.default && [m.cover.default.replace(/(\.\w+)$/, '_orig$1'), m.cover.default], // рядом с обложкой 375px лежит _orig ~1000px
+      type: m.type?.label, year: yearOf(m.releaseDateString || m.releaseDate), status: m.status?.label, age: m.ageRestriction?.label,
+      genres: names(m.genres), tags: names(m.tags), publisher: names([].concat(m.publisher || [])).join(', '),
     };
     return { meta, chapters, branches };
   }
@@ -542,6 +563,9 @@
       author: '',
       description: [...desc.children].map((p) => p.textContent.trim()).filter(Boolean).join('\n\n') || desc.textContent.trim(),
       cover: t.cover?.high && new URL(t.cover.high, location.origin).href,
+      alt: otherTitles(t.main_name, [t.secondary_name, ...String(t.another_name || '').split(' / ')]),
+      type: t.type?.name, year: yearOf(t.issue_year), status: t.status?.name, age: t.age_limit?.name,
+      genres: names(t.genres), tags: names(t.categories),
     };
     return { meta, chapters, branches };
   }
@@ -587,11 +611,16 @@
       name: a.querySelector('.chapters__name')?.textContent.trim() || '',
       url: abs(a.getAttribute('href')),
     })).sort(byNumber);
+    const middle = [...doc.querySelectorAll('.manga__middle-link')]; // под названием: тип, год, статус (у статуса в адресе status_id)
     const meta = {
       title: doc.querySelector('.manga__name')?.textContent.trim() || slug,
       author: '',
       description: doc.querySelector('.manga__description')?.textContent.trim() || '',
       cover: abs((doc.querySelector('.manga__img img') || doc.querySelector('.manga__poster img'))?.getAttribute('src')),
+      type: middle[0]?.textContent.trim(),
+      year: yearOf(middle.map((a) => a.textContent).join(' ')),
+      status: middle.find((a) => /status_id/.test(a.getAttribute('href')))?.textContent.trim(),
+      genres: [...doc.querySelectorAll('.tags__item')].map((a) => a.textContent.trim()).filter((s) => !/^\+/.test(s)), // «+16 тегов» — кнопка
     };
     return { meta, chapters, branches: new Map() };
   }
@@ -606,7 +635,9 @@
   const galleryChapter = (slug, ch) => ({ pages: ch.pages });
   const EXT = { j: 'jpg', p: 'png', w: 'webp', g: 'gif', a: 'avif' }; // коды формата у imhentai и nhentai
   // строка из блока сведений о галерее imhentai («Artists: …»), а не одноимённый пункт меню сайта
-  const liText = (doc, label) => [...doc.querySelectorAll('.galleries_info li')].find((li) => li.textContent.trim().startsWith(label));
+  // имена из строки «Artists: …» (в ссылке после имени идёт счётчик, берём только первый текстовый узел)
+  const liNames = (doc, label) => [...([...doc.querySelectorAll('.galleries_info li')].find((li) => li.textContent.trim().startsWith(label))?.querySelectorAll('a') || [])]
+    .map((a) => a.firstChild?.textContent.trim()).filter(Boolean);
 
   // imhentai: сервер, папка и формат каждой страницы лежат прямо в HTML галереи
   async function imhentaiTitle(id) {
@@ -619,11 +650,12 @@
       const [code, w] = (th[i + 1] || 'j').split(',');
       return { urls: [`https://m${server}.imhentai.xxx/${dir}/${key}/${i + 1}.${EXT[code] || 'jpg'}`], width: +w || undefined };
     });
-    const artists = liText(doc, 'Artists:');
     const cover = doc.querySelector('.left_cover img');
     return gallery({
       title: val('gallery_title') || doc.querySelector('h1')?.textContent.trim() || id,
-      author: artists ? [...artists.querySelectorAll('a')].map((a) => a.firstChild?.textContent.trim()).filter(Boolean).join(', ') : '',
+      author: liNames(doc, 'Artists:').join(', '),
+      genres: liNames(doc, 'Category:'),
+      tags: ['Parodies:', 'Characters:', 'Tags:', 'Languages:'].flatMap((l) => liNames(doc, l)),
       description: '',
       cover: [pages[0]?.urls[0], abs(cover?.getAttribute('data-src') || cover?.getAttribute('src'))].filter(Boolean), // cover.jpg — уменьшенная первая страница
     }, pages);
@@ -671,6 +703,8 @@
     return gallery({
       title: g.title?.pretty || g.title?.english || g.title?.japanese || id,
       author: (g.tags || []).filter((t) => t.type === 'artist').map((t) => t.name).join(', '),
+      genres: (g.tags || []).filter((t) => t.type === 'category').map((t) => t.name),
+      tags: (g.tags || []).filter((t) => ['parody', 'character', 'tag', 'language'].includes(t.type)).map((t) => t.name),
       description: '',
       cover: [...(pages[0]?.urls || []), c && `https://t.nhentai.net/galleries/${mid}/cover.${ext(c)}`].filter(Boolean), // cover — миниатюра первой страницы
     }, pages);
@@ -711,6 +745,11 @@
         author: [...new Set(m.relationships.filter((r) => r.type === 'author' || r.type === 'artist').map((r) => r.attributes?.name).filter(Boolean))].join(', '),
         description: pick(a.description) || '',
         cover: coverFile && `https://uploads.mangadex.org/covers/${id}/${coverFile}`,
+        alt: otherTitles(a.title?.ru, [...Object.values(a.title || {}), ...(a.altTitles || []).flatMap((t) => Object.values(t))]),
+        type: { ko: 'Манхва', zh: 'Маньхуа', 'zh-hk': 'Маньхуа', ja: 'Манга' }[a.originalLanguage],
+        year: yearOf(a.year), status: a.status, age: { erotica: '18+', pornographic: '18+' }[a.contentRating],
+        genres: (a.tags || []).filter((t) => t.attributes.group === 'genre').map((t) => pick(t.attributes.name)),
+        tags: (a.tags || []).filter((t) => t.attributes.group !== 'genre').map((t) => pick(t.attributes.name)),
       },
       chapters: [...byKey.values()].sort(byNumber),
       branches,
@@ -738,6 +777,8 @@
       meta: {
         title: doc.querySelector('.post-title h1, .post-title h3')?.textContent.trim() || path,
         author: [...doc.querySelectorAll('.author-content a')].map((a) => a.textContent.trim()).join(', '),
+        artist: [...doc.querySelectorAll('.artist-content a')].map((a) => a.textContent.trim()).join(', '),
+        genres: [...doc.querySelectorAll('.genres-content a')].map((a) => a.textContent.trim()),
         description: doc.querySelector('.summary__content, .description-summary')?.textContent.trim() || '',
         // WordPress кладёт в страницу уменьшенную копию (имя-193x278.webp); оригинал — то же имя без размера
         cover: cover && [cover.replace(/-\d+x\d+(?=\.\w+$)/, ''), cover],
@@ -753,7 +794,8 @@
 
   // Dynasty Scans: у серий и глав есть JSON (адрес + .json); арты — отдельные страницы /images/{id} без JSON
   const dyGet = (path) => retry(() => fetch(path).then(checkedJson));
-  const dyTags = (o, type) => (o.tags || []).filter((t) => t.type === type).map((t) => t.name).join(', ');
+  const dyNames = (o, type) => (o.tags || []).filter((t) => t.type === type).map((t) => t.name);
+  const dyTags = (o, type) => dyNames(o, type).join(', ');
   // полная картинка арта; превью в подборках лежат в другой папке и с другим расширением
   async function dynastyArtSrc(href) {
     const doc = await getHtml(abs(href));
@@ -784,7 +826,7 @@
     if (path.startsWith('chapters/')) { // глава: если она из серии — берём всю серию, иначе это ваншот из одной главы
       const c = await dyGet(`/${path}.json`);
       const series = (c.tags || []).find((t) => t.type === 'Series');
-      if (!series) return { meta: { title: c.title, author: dyTags(c, 'Author'), description: '', cover: null }, chapters: [{ volume: '1', number: '1', name: c.title, permalink: c.permalink }], branches: new Map() };
+      if (!series) return { meta: { title: c.title, author: dyTags(c, 'Author'), description: '', cover: null, tags: dyNames(c, 'General'), alt: dyNames(c, 'Doujin') }, chapters: [{ volume: '1', number: '1', name: c.title, permalink: c.permalink }], branches: new Map() };
       path = `series/${series.permalink}`;
     }
     const s = await dyGet(`/${path}.json`);
@@ -794,7 +836,7 @@
       name: t.title || '',
       permalink: t.permalink,
     }));
-    return { meta: { title: s.name || path, author: dyTags(s, 'Author'), description: htmlText(s.description), cover: s.cover && [abs(s.cover.replace('/medium/', '/original/')), abs(s.cover)] }, chapters, branches: new Map() };
+    return { meta: { title: s.name || path, author: dyTags(s, 'Author'), description: htmlText(s.description), tags: dyNames(s, 'General'), alt: s.aliases || [], cover: s.cover && [abs(s.cover.replace('/medium/', '/original/')), abs(s.cover)] }, chapters, branches: new Map() };
   }
   async function dynastyChapter(slug, ch) {
     if (ch.pages) return { pages: ch.pages }; // арты
@@ -959,6 +1001,9 @@
 <dc:title>${title}</dc:title><dc:language>ru</dc:language>
 ${book.author ? `<dc:creator>${esc(book.author)}</dc:creator>` : ''}
 ${book.description ? `<dc:description>${esc(book.description)}</dc:description>` : ''}
+${[...(book.genres || []), ...(book.tags || [])].map((s) => `<dc:subject>${esc(s)}</dc:subject>`).join('')}
+${book.year ? `<dc:date>${esc(book.year)}</dc:date>` : ''}${book.publisher ? `<dc:publisher>${esc(book.publisher)}</dc:publisher>` : ''}${book.translator ? `<dc:contributor>${esc(book.translator)}</dc:contributor>` : ''}
+<dc:source>${esc(book.url)}</dc:source>
 <meta property="dcterms:modified">${new Date().toISOString().replace(/\.\d+Z$/, 'Z')}</meta>
 ${cover ? '<meta name="cover" content="cover"/>' : ''}
 </metadata>
@@ -978,7 +1023,10 @@ ${cover ? '<guide><reference type="cover" title="Обложка" href="cover.xht
 
   function htmlBook(book, chapters, emb, cover) {
     const parts = [`<!DOCTYPE html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(book.title)}</title><style>body{max-width:820px;margin:0 auto;padding:0 14px;font:18px/1.6 Georgia,serif;background:#fdfaf3;color:#222}img{max-width:100%;height:auto;display:block;margin:0 auto}section{margin:2em 0}h2{text-align:center}@media(prefers-color-scheme:dark){body{background:#161616;color:#ddd}a{color:#ff8a65}}</style></head><body><h1>${esc(book.title)}</h1>`];
-    if (book.author) parts.push(`<p><i>${esc(book.author)}</i></p>`);
+    // блок «О тайтле»; ссылка на источник — обычной ссылкой (адрес наш, из location.href)
+    const rows = infoRows(book).filter(([k]) => k !== 'Название');
+    if (settings.info && rows.length) parts.push(`<p>${rows.map(([k, v]) => `<b>${esc(k)}:</b> ${k === 'Источник' ? `<a href="${esc(v)}">${esc(v)}</a>` : esc(v)}`).join('<br>')}</p>`);
+    else if (book.author) parts.push(`<p><i>${esc(book.author)}</i></p>`);
     if (cover) withImages(parts, `<img src="${cover}" alt=""/>`, emb);
     if (book.description) parts.push(`<p>${esc(book.description).replace(/\n+/g, '<br>')}</p>`);
     parts.push(`<nav><h2>Оглавление</h2><ol>${chapters.map((c, i) => `<li><a href="#c${i + 1}">${esc(c.title)}</a></li>`).join('')}</ol></nav>`);
@@ -994,10 +1042,11 @@ ${cover ? '<guide><reference type="cover" title="Обложка" href="cover.xht
       return `<section><title><p>${esc(c.title)}</p></title>${body || '<empty-line/>'}</section>`;
     }).join('\n');
     const annotation = book.description ? `<annotation>${book.description.split(/\n+/).map((p) => `<p>${esc(p)}</p>`).join('')}</annotation>` : '';
+    const keywords = [...(book.genres || []), ...(book.tags || [])].join(', '); // порядок полей title-info задан схемой FB2
     const parts = [`<?xml version="1.0" encoding="UTF-8"?>
 <FictionBook xmlns="http://www.gribuser.ru/xml/fictionbook/2.0" xmlns:l="http://www.w3.org/1999/xlink">
-<description><title-info><genre>prose_contemporary</genre><author><nickname>${esc(book.author || 'Неизвестен')}</nickname></author><book-title>${esc(book.title + book.range)}</book-title>${annotation}${cover ? `<coverpage>${img(cover)}</coverpage>` : ''}<lang>ru</lang></title-info>
-<document-info><author><nickname>NekoShelf</nickname></author><program-used>NekoShelf userscript</program-used><date>${new Date().toISOString().slice(0, 10)}</date><id>neko-shelf-${esc(book.uid)}</id><version>1.0</version></document-info></description>
+<description><title-info><genre>prose_contemporary</genre><author><nickname>${esc(book.author || 'Неизвестен')}</nickname></author><book-title>${esc(book.title + book.range)}</book-title>${annotation}${keywords ? `<keywords>${esc(keywords)}</keywords>` : ''}${book.year ? `<date>${esc(book.year)}</date>` : ''}${cover ? `<coverpage>${img(cover)}</coverpage>` : ''}<lang>ru</lang>${book.translator ? `<translator><nickname>${esc(book.translator)}</nickname></translator>` : ''}</title-info>
+<document-info><author><nickname>NekoShelf</nickname></author><program-used>NekoShelf userscript</program-used><date>${new Date().toISOString().slice(0, 10)}</date><src-url>${esc(book.url)}</src-url><id>neko-shelf-${esc(book.uid)}</id><version>1.0</version></document-info></description>
 <body><title><p>${esc(book.title)}</p></title>
 ${sections}
 </body>\n`];
@@ -1006,8 +1055,8 @@ ${sections}
     return new Blob(parts, { type: 'application/x-fictionbook+xml' });
   }
 
-  function txtBook(book, chapters) {
-    const out = [book.title, book.author, '', book.description];
+  function txtBook(book, chapters, info) {
+    const out = info ? [info] : [book.title, book.author, '', book.description];
     for (const c of chapters) {
       out.push('', '', c.title, '');
       for (const b of blocks(c.html)) out.push(b.img != null ? `[Картинка: ${b.img}]` : b.hr ? '* * *' : b.text, '');
@@ -1045,6 +1094,10 @@ ${sections}
     const font = await doc.embedFont(await getFont(), { subset: false });
     doc.setTitle(book.title);
     if (book.author) doc.setAuthor(book.author);
+    if (book.description) doc.setSubject(book.description);
+    const keywords = [...(book.genres || []), ...(book.tags || [])];
+    if (keywords.length) doc.setKeywords(keywords);
+    doc.setCreator('NekoShelf');
     const A5 = PDFLib.PageSizes.A5; // удобно читать на телефоне
     const [W, H] = A5, M = 36, maxW = W - 2 * M;
     let page, y;
@@ -1081,7 +1134,11 @@ ${sections}
     };
     newPage();
     text(book.title, 18, 8);
-    if (book.author) text(book.author, 12, 8);
+    if (settings.info) { // блок «О тайтле» и описание на первой странице
+      for (const [k, v] of infoRows(book).filter(([key]) => key !== 'Название')) text(`${k}: ${v}`, 10, 2);
+      if (book.description) { y -= 6; for (const p of book.description.split(/\n+/)) text(p, 10, 4); }
+      y -= 6;
+    } else if (book.author) text(book.author, 12, 8);
     if (cover) await image(cover, true);
     for (const c of chapters) {
       newPage();
@@ -1099,7 +1156,7 @@ ${sections}
   const state = { busy: false, cancel: false, fallback: null, fromBackup: 0 };
 
   // Настройки общие для всех сайтов — в хранилище менеджера скриптов; без него — в localStorage текущего сайта
-  const settings = { sameWidth: true, cover: true };
+  const settings = { sameWidth: true, cover: true, info: true };
   const gmGetValue = typeof GM !== 'undefined' && GM.getValue ? GM.getValue.bind(GM) : typeof GM_getValue === 'function' ? async (k, d) => GM_getValue(k, d) : null;
   const gmSetValue = typeof GM !== 'undefined' && GM.setValue ? GM.setValue.bind(GM) : typeof GM_setValue === 'function' ? async (k, v) => GM_setValue(k, v) : null;
   const SETTINGS_KEY = 'neko-shelf-settings';
@@ -1118,13 +1175,15 @@ ${sections}
     const m = info.meta;
     const range = list.length === info.chapters.length ? '' : ` (${list[0].volume}-${list[0].number}…${list.at(-1).volume}-${list.at(-1).number})`;
     const book = {
+      ...m, // название, автор, описание и сведения о тайтле из адаптера
       slug,
       range, // часть тайтла: идёт в название и id книги, чтобы читалки не путали разные диапазоны одного тайтла
       uid: slug + (range ? ':' + encodeURIComponent(range.trim()) : ''),
-      title: m.title,
-      author: m.author,
-      description: m.description,
+      // переводчики скачиваемых глав (у каждой главы — выбранный или первый доступный перевод)
+      translator: [...new Set(list.map((ch) => info.branches.get(String(pickBranch(ch, opts.branch)?.branch_id))).filter(Boolean))].join('; '),
+      url: location.href,
     };
+    const infoTxt = () => (settings.info ? [...infoRows(book).map(([k, v]) => `${k}: ${v}`), '', book.description || ''].join('\n') : '');
     const zip = new Zip();
     if (fmt === 'epub') zip.add('mimetype', 'application/epub+zip'); // EPUB требует mimetype первым файлом
     const imagePdf = fmt === 'pdf' && site.kind === 'manga' ? new Pdf(settings.sameWidth) : null;
@@ -1196,15 +1255,25 @@ ${sections}
     ui.status('Сборка файла…', 1);
     let blob, ext = fmt;
     if (fmt === 'cbz') {
-      zip.add('ComicInfo.xml', `<?xml version="1.0" encoding="utf-8"?><ComicInfo><Title>${esc(book.title)}</Title><Series>${esc(book.title)}</Series><Writer>${esc(book.author)}</Writer><Summary>${esc(book.description)}</Summary><LanguageISO>ru</LanguageISO><Manga>YesAndRightToLeft</Manga></ComicInfo>`);
+      // поля — в порядке схемы ComicInfo (Komga, Kavita, Mihon читают его отсюда); пустые не пишем
+      const ci = [['Title', book.title], ['Series', book.title], ['Summary', book.description], ['Year', book.year], ['Writer', book.author], ['Penciller', book.artist],
+        ['Translator', book.translator], ['Publisher', book.publisher], ['Genre', (book.genres || []).join(', ')], ['Tags', (book.tags || []).join(', ')], ['Web', book.url],
+        ['LanguageISO', 'ru'], ['Manga', 'YesAndRightToLeft']].filter(([, v]) => v).map(([k, v]) => `<${k}>${esc(v)}</${k}>`).join('');
+      zip.add('ComicInfo.xml', `<?xml version="1.0" encoding="utf-8"?><ComicInfo>${ci}</ComicInfo>`);
       blob = zip.blob('application/vnd.comicbook+zip');
-    } else if (fmt === 'zip') blob = zip.blob('application/zip');
+    } else if (fmt === 'zip') {
+      if (settings.info) zip.add('info.txt', infoTxt());
+      blob = zip.blob('application/zip');
+    }
     else if (fmt === 'epub') { epubFiles(zip, book, done, images, cover); blob = zip.blob('application/epub+zip'); }
     else if (fmt === 'html') blob = htmlBook(book, done, emb, cover);
     else if (fmt === 'fb2') blob = fb2Book(book, done, emb, cover);
-    else if (fmt === 'pdf') blob = imagePdf ? imagePdf.blob(book.title) : await textPdf(book, done, emb, cover);
-    else { // txt: с картинками — архивом, без них — просто текстом
-      const txt = txtBook(book, done);
+    else if (fmt === 'pdf') {
+      blob = imagePdf
+        ? imagePdf.blob({ title: book.title + book.range, author: book.author, subject: book.description, keywords: [...(book.genres || []), ...(book.tags || [])].join(', ') })
+        : await textPdf(book, done, emb, cover);
+    } else { // txt: с картинками — архивом, без них — просто текстом
+      const txt = txtBook(book, done, infoTxt());
       if (images.length) { zip.add(`${safeName(book.title)}.txt`, txt); blob = zip.blob('application/zip'); ext = 'zip'; }
       else blob = new Blob([txt], { type: 'text/plain;charset=utf-8' });
     }
@@ -1290,6 +1359,7 @@ ${sections}
     <div class="tab" data-tab="dl" role="tabpanel">
       <label class="opt"><input type="checkbox" data-key="sameWidth"><span>Одинаковая ширина страниц<small>PDF и CBZ: страницы приводятся к самой частой ширине — широкие ужимаются, узкие растягиваются. Выключите, чтобы оставить исходные размеры.</small></span></label>
       <label class="opt"><input type="checkbox" data-key="cover"><span>Обложка первой страницей<small>Во всех форматах, кроме TXT.</small></span></label>
+      <label class="opt"><input type="checkbox" data-key="info"><span>Сведения о тайтле в начале файла<small>TXT, HTML, PDF ранобэ и ZIP (info.txt): названия, автор, год, статус, жанры, теги, перевод, ссылка. В EPUB, FB2, CBZ и свойства PDF они пишутся всегда.</small></span></label>
       <p class="hint">Сохраняется сразу и действует на всех сайтах.</p>
     </div>
     <div class="tab" data-tab="about" role="tabpanel" hidden>

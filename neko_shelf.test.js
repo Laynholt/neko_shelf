@@ -37,6 +37,10 @@ assert.strictEqual(L.mostCommon([800, 690, 690, 800, 690]), 690);
 assert.strictEqual(L.mostCommon([2, 20000]), 2);
 assert.strictEqual(L.mostCommon([]), undefined);
 
+// блок «О тайтле»: только заполненные поля, списки через запятую
+assert.deepStrictEqual(L.infoRows({ title: 'Т', alt: ['A', '', 'B'], genres: [], tags: ['x'], year: '', url: 'https://s' }),
+  [['Название', 'Т'], ['Другие названия', 'A, B'], ['Теги', 'x'], ['Источник', 'https://s']]);
+
 // SOF0 после APP0: 2x3 пикселя, 3 канала
 const jpg = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0, 4, 0, 0, 0xff, 0xc0, 0, 17, 8, 0, 3, 0, 2, 3]);
 assert.deepStrictEqual(L.jpegInfo(jpg), { h: 3, w: 2, c: 3 });
@@ -47,7 +51,7 @@ assert.strictEqual(L.jpegInfo(new Uint8Array([0x89, 0x50])), null);
   const pdfText = async (sizes, sameWidth) => {
     const p = new L.Pdf(sameWidth);
     for (const [w, h, fit] of sizes) p.addImage({ bytes: jpg, w, h, c: 3, fit });
-    const buf = Buffer.from(await p.blob('Тест').arrayBuffer());
+    const buf = Buffer.from(await p.blob({ title: 'Тест', keywords: 'Драма, Комедия' }).arrayBuffer());
     const s = buf.toString('latin1');
     const xref = +s.match(/startxref\n(\d+)/)[1];
     assert.strictEqual(s.slice(xref, xref + 4), 'xref');
