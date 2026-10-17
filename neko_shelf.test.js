@@ -46,7 +46,7 @@ assert.strictEqual(L.jpegInfo(new Uint8Array([0x89, 0x50])), null);
   // PDF: каждая запись xref должна указывать ровно на начало «N 0 obj»
   const pdfText = async (sizes, sameWidth) => {
     const p = new L.Pdf(sameWidth);
-    for (const [w, h] of sizes) p.addImage({ bytes: jpg, w, h, c: 3 });
+    for (const [w, h, fit] of sizes) p.addImage({ bytes: jpg, w, h, c: 3, fit });
     const buf = Buffer.from(await p.blob('Тест').arrayBuffer());
     const s = buf.toString('latin1');
     const xref = +s.match(/startxref\n(\d+)/)[1];
@@ -61,6 +61,8 @@ assert.strictEqual(L.jpegInfo(new Uint8Array([0x89, 0x50])), null);
   assert.ok(a.s.includes('/Count 4'));
   // настройка «одинаковая ширина» выключена: страницы своего размера
   assert.deepStrictEqual((await pdfText([[800, 1200], [1000, 1500], [600, 900]], false)).boxes, ['800x1200', '1000x1500', '600x900']);
+  // обложка (fit) крупного оригинала ужимается до общей ширины и без «одинаковой ширины»
+  assert.deepStrictEqual((await pdfText([[2000, 3000, true], [800, 1200], [800, 1000]], false)).boxes, ['800x1200', '800x1200', '800x1000']);
   // предел страницы PDF 14400pt: слишком широкую ужимаем, длинную полосу режем на страницы той же ширины
   assert.deepStrictEqual((await pdfText([[20000, 3]])).boxes, ['14400x2.16']);
   const strip = await pdfText([[690, 30000], [690, 1000]]);

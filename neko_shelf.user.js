@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NekoShelf
 // @namespace    https://github.com/Laynholt/neko_shelf
-// @version      1.6.0
+// @version      1.6.1
 // @description  Скачивание манги, манхвы и ранобэ с MangaLIB, RanobeLIB, HentaiLIB, SlashLIB, ReManga, MangaBuff, MangaDex, Dynasty Scans, LilyManga, Yurivan, IMHentai, Nude-Moon, nhentai в PDF, CBZ, ZIP, EPUB, FB2, TXT и HTML. Своя читалка там, где сайт без входа показывает 404. Основан на LibSaver (dfy-dpg).
 // @author       laynholt
 // @license      GPL-3.0
@@ -256,10 +256,10 @@
       this.put(`${id} 0 obj\n${dict}\nstream\n`); this.put(data); this.put('\nendstream\nendobj\n');
     }
     // Картинку пишем сразу, а страницу — в blob(), когда известна самая частая ширина
-    addImage({ bytes, w, h, c }) {
+    addImage({ bytes, w, h, c, fit }) { // fit — всегда к общей ширине (обложка), даже без sameWidth
       const img = this.next++;
       this.obj(img, `<</Type/XObject/Subtype/Image/Width ${w}/Height ${h}/ColorSpace/${c === 1 ? 'DeviceGray' : 'DeviceRGB'}/BitsPerComponent 8/Filter/DCTDecode/Length ${bytes.length}>>`, bytes);
-      this.pages.push({ img, w, h });
+      this.pages.push({ img, w, h, fit });
     }
     blob(title) {
       // Все страницы приводим к самой частой ширине (широкие ужимаем, узкие растягиваем) с сохранением пропорций.
@@ -268,8 +268,8 @@
       const MAX = 14400; // предел размера страницы PDF, pt
       const f = (n) => +n.toFixed(2);
       const kids = [];
-      for (const { img, w, h } of this.pages) {
-        const s = Math.min(this.sameWidth ? common / w : 1, MAX / w);
+      for (const { img, w, h, fit } of this.pages) {
+        const s = Math.min(this.sameWidth || fit ? common / w : 1, MAX / w);
         const pw = f(w * s), ph = h * s;
         // Длинную полосу (вебтун) не ужимаем, а режем на страницы одной ширины: та же картинка, сдвинутая вверх
         for (let y0 = 0; ph - y0 > 0.5; y0 += MAX) {
@@ -499,7 +499,7 @@
       author: (m.authors || []).map((a) => a.name).filter(Boolean).join(', '),
       description: typeof m.summary === 'string' ? m.summary
         : (m.summary?.content || []).map((p) => (p.content || []).map((t) => t.text || '').join('')).join('\n\n'),
-      cover: m.cover?.default,
+      cover: m.cover?.default && [m.cover.default.replace(/(\.\w+)$/, '_orig$1'), m.cover.default], // рядом с обложкой 375px лежит _orig ~1000px
     };
     return { meta, chapters, branches };
   }
@@ -625,7 +625,7 @@
       title: val('gallery_title') || doc.querySelector('h1')?.textContent.trim() || id,
       author: artists ? [...artists.querySelectorAll('a')].map((a) => a.firstChild?.textContent.trim()).filter(Boolean).join(', ') : '',
       description: '',
-      cover: abs(cover?.getAttribute('data-src') || cover?.getAttribute('src')),
+      cover: [pages[0]?.urls[0], abs(cover?.getAttribute('data-src') || cover?.getAttribute('src'))].filter(Boolean), // cover.jpg — уменьшенная первая страница
     }, pages);
   }
 
@@ -644,7 +644,7 @@
       title: (page.querySelector('h1') || reader.querySelector('h1'))?.textContent.trim() || slug,
       author: '',
       description: '',
-      cover: abs(thumb?.getAttribute('src')),
+      cover: [pages[0]?.urls[0], abs(thumb?.getAttribute('src'))].filter(Boolean), // миниатюра — уменьшенная первая страница
     }, pages);
   }
 
@@ -672,7 +672,7 @@
       title: g.title?.pretty || g.title?.english || g.title?.japanese || id,
       author: (g.tags || []).filter((t) => t.type === 'artist').map((t) => t.name).join(', '),
       description: '',
-      cover: c && `https://t.nhentai.net/galleries/${mid}/cover.${ext(c)}`,
+      cover: [...(pages[0]?.urls || []), c && `https://t.nhentai.net/galleries/${mid}/cover.${ext(c)}`].filter(Boolean), // cover — миниатюра первой страницы
     }, pages);
   }
 
@@ -733,12 +733,14 @@
       url: abs(a.getAttribute('href')),
     }));
     const img = doc.querySelector('.summary_image img');
+    const cover = abs(img?.getAttribute('data-src') || img?.getAttribute('data-lazy-src') || img?.getAttribute('src'));
     return {
       meta: {
         title: doc.querySelector('.post-title h1, .post-title h3')?.textContent.trim() || path,
         author: [...doc.querySelectorAll('.author-content a')].map((a) => a.textContent.trim()).join(', '),
         description: doc.querySelector('.summary__content, .description-summary')?.textContent.trim() || '',
-        cover: abs(img?.getAttribute('data-src') || img?.getAttribute('data-lazy-src') || img?.getAttribute('src')),
+        // WordPress кладёт в страницу уменьшенную копию (имя-193x278.webp); оригинал — то же имя без размера
+        cover: cover && [cover.replace(/-\d+x\d+(?=\.\w+$)/, ''), cover],
       },
       chapters,
       branches: new Map(),
@@ -792,7 +794,7 @@
       name: t.title || '',
       permalink: t.permalink,
     }));
-    return { meta: { title: s.name || path, author: dyTags(s, 'Author'), description: htmlText(s.description), cover: abs(s.cover) }, chapters, branches: new Map() };
+    return { meta: { title: s.name || path, author: dyTags(s, 'Author'), description: htmlText(s.description), cover: s.cover && [abs(s.cover.replace('/medium/', '/original/')), abs(s.cover)] }, chapters, branches: new Map() };
   }
   async function dynastyChapter(slug, ch) {
     if (ch.pages) return { pages: ch.pages }; // арты
@@ -1140,11 +1142,11 @@ ${sections}
       switch (fmt) {
         case 'cbz':
           cbzWidth ??= common;
-          if (cbzWidth && settings.sameWidth) try { ({ buf, ext } = await fitWidth(buf, ext, cbzWidth)); } catch { /* не смогли перекодировать — кладём как есть */ }
+          if (cbzWidth && (settings.sameWidth || !chap)) try { ({ buf, ext } = await fitWidth(buf, ext, cbzWidth)); } catch { /* не смогли перекодировать — кладём как есть */ }
           zip.add(`${pad(chap, 4)}-${pad(page + 1, 3)}.${ext}`, buf);
           return '';
         case 'zip': zip.add(`${pad(chap, 4)} ${safeName(chTitle)}/${pad(page + 1, 3)}.${ext}`, buf); return '';
-        case 'pdf': if (imagePdf) { imagePdf.addImage(await toJpeg(buf, ext)); return ''; } emb[k] = { ext, buf }; return `neko-shelf-img:${k}`;
+        case 'pdf': if (imagePdf) { imagePdf.addImage({ ...(await toJpeg(buf, ext)), fit: !chap }); return ''; } emb[k] = { ext, buf }; return `neko-shelf-img:${k}`;
         case 'html': case 'fb2': emb[k] = { ext, b64: new Blob([await base64(buf)]) }; return `neko-shelf-img:${k}`;
         default: { // epub, txt
           const path = `img/${pad(k, 5)}.${ext}`;
@@ -1158,11 +1160,15 @@ ${sections}
     let cover = null;
     const addCover = async () => {
       if (fmt === 'txt' || !settings.cover || !m.cover) return;
-      try {
-        const c = await getImage([m.cover]);
-        cover = await addImage(c.buf, c.ext, 0, 0, 'Обложка');
-        if (fmt === 'epub') cover = images.at(-1);
-      } catch { /* без обложки */ }
+      // m.cover — адрес или список: сначала полноразмерный вариант, потом запасной
+      for (const url of [].concat(m.cover)) {
+        try {
+          const c = await getImage([url]);
+          cover = await addImage(c.buf, c.ext, 0, 0, 'Обложка');
+          if (fmt === 'epub') cover = images.at(-1);
+          return;
+        } catch { /* пробуем следующий вариант; ни один не скачался — файл без обложки */ }
+      }
     };
     // CBZ: обложку берём после глав, когда известна ширина; в архиве она всё равно первая (0000-001)
     if (fmt !== 'cbz') await addCover();
