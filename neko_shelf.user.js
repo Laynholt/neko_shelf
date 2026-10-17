@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NekoShelf
 // @namespace    https://github.com/Laynholt/neko_shelf
-// @version      1.5.1
+// @version      1.6.0
 // @description  Скачивание манги, манхвы и ранобэ с MangaLIB, RanobeLIB, HentaiLIB, SlashLIB, ReManga, MangaBuff, MangaDex, Dynasty Scans, LilyManga, Yurivan, IMHentai, Nude-Moon, nhentai в PDF, CBZ, ZIP, EPUB, FB2, TXT и HTML. Своя читалка там, где сайт без входа показывает 404. Основан на LibSaver (dfy-dpg).
 // @author       laynholt
 // @license      GPL-3.0
@@ -1111,7 +1111,7 @@ ${sections}
     const fmt = opts.format;
     await settingsLoaded;
     state.fallback = null; state.fromBackup = 0;
-    const list = info.chapters.slice(opts.from, opts.to + 1);
+    const list = info.chapters.slice(opts.from, opts.to + 1).filter((_, k) => !opts.skip?.has(opts.from + k));
     const m = info.meta;
     const range = list.length === info.chapters.length ? '' : ` (${list[0].volume}-${list[0].number}…${list.at(-1).volume}-${list.at(-1).number})`;
     const book = {
@@ -1265,6 +1265,11 @@ ${sections}
   progress::-webkit-progress-value{background:linear-gradient(90deg,#2e7d32,#66bb6a);border-radius:4px;transition:width .2s}
   progress::-moz-progress-bar{background:linear-gradient(90deg,#2e7d32,#66bb6a);border-radius:4px}
   .st{margin-top:6px;font-size:12px;color:#ccc;word-break:break-word;white-space:pre-wrap}
+  .pick{margin-top:10px;font-size:13px}
+  .pick summary{cursor:pointer;color:#ccc}
+  .chk{max-height:220px;overflow:auto;margin-top:6px;padding:2px 8px;border:1px solid #333;border-radius:8px;background:#262626}
+  .chk label{display:flex;gap:8px;align-items:center;margin:5px 0;color:#eee;font-size:13px;cursor:pointer}
+  .chk input{flex:none;margin:0;accent-color:#66bb6a}
   a{color:#ff8a65}
 </style>
 <div class="panel" hidden>
@@ -1295,6 +1300,7 @@ ${sections}
     <label>Перевод</label><select class="branch"></select>
     <label>С главы</label><select class="from"></select>
     <label>По главу</label><select class="to"></select>
+    <details class="pick"><summary>Выбрать главы в диапазоне <span class="cnt"></span></summary><div class="chk"></div></details>
     <label>Формат</label><select class="fmt"></select>
     <div class="row"><button class="go">Скачать</button><button class="stop">Отмена</button></div>
   </div>
@@ -1392,6 +1398,7 @@ ${sections}
     try {
       const info = await loadTitle(slug);
       current = { slug, info };
+      skip.clear();
       $('.title').textContent = info.meta.title;
       $('.edit').hidden = false;
       const opts = info.chapters.map((ch, i) => `<option value="${i}">${esc(chapterLabel(ch))}</option>`).join('');
@@ -1404,20 +1411,47 @@ ${sections}
       $('.branch').hidden = oneBranch;
       $('.branch').previousElementSibling.hidden = oneBranch;
       $('.form').hidden = !info.chapters.length;
+      renderPick();
       ui.status(info.chapters.length ? `Глав: ${info.chapters.length}` : 'Глав нет');
     } catch (e) {
       ui.status('Ошибка: ' + e.message);
     }
   }
 
+  // Галки по главам выбранного диапазона: снятые не скачиваются. Индексы снятых глав живут до смены тайтла
+  const skip = new Set();
+  function pickCount() {
+    const from = +$('.from').value, to = +$('.to').value;
+    let n = 0;
+    for (let i = from; i <= to; i++) if (!skip.has(i)) n++;
+    $('.cnt').textContent = from > to ? '' : `(${n} из ${to - from + 1})`;
+    return n;
+  }
+  function renderPick() {
+    pickCount();
+    if (!current || !$('.pick').open) return; // список строим, только когда его раскрыли — у тайтлов бывают тысячи глав
+    const from = +$('.from').value, to = +$('.to').value, rows = [];
+    for (let i = from; i <= to; i++) rows.push(`<label><input type="checkbox" data-i="${i}"${skip.has(i) ? '' : ' checked'}>${esc(chapterLabel(current.info.chapters[i]))}</label>`);
+    $('.chk').innerHTML = trusted(rows.join(''));
+  }
+  $('.pick').addEventListener('toggle', renderPick);
+  $('.from').addEventListener('change', renderPick);
+  $('.to').addEventListener('change', renderPick);
+  $('.chk').addEventListener('change', (e) => {
+    const i = +e.target.dataset.i;
+    if (e.target.checked) skip.delete(i); else skip.add(i);
+    pickCount();
+  });
+
   async function start() {
     if (state.busy || !current) return;
     const from = +$('.from').value, to = +$('.to').value;
     if (from > to) return ui.status('«С главы» должна быть не позже «По главу»');
+    if (!pickCount()) return ui.status('Не выбрано ни одной главы');
     state.busy = true; state.cancel = false;
     $('.go').disabled = true;
     try {
-      const { blob, name, errors } = await download(current.slug, current.info, { from, to, branch: $('.branch').value, format: $('.fmt').value }, ui);
+      const { blob, name, errors } = await download(current.slug, current.info, { from, to, skip, branch: $('.branch').value, format: $('.fmt').value }, ui);
       if (lastUrl) URL.revokeObjectURL(lastUrl); // освобождаем прошлый файл
       const url = lastUrl = URL.createObjectURL(blob);
       const a = document.createElement('a');
