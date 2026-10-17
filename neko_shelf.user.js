@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NekoShelf
 // @namespace    https://github.com/Laynholt/neko_shelf
-// @version      1.6.1
+// @version      1.6.2
 // @description  Скачивание манги, манхвы и ранобэ с MangaLIB, RanobeLIB, HentaiLIB, SlashLIB, ReManga, MangaBuff, MangaDex, Dynasty Scans, LilyManga, Yurivan, IMHentai, Nude-Moon, nhentai в PDF, CBZ, ZIP, EPUB, FB2, TXT и HTML. Своя читалка там, где сайт без входа показывает 404. Основан на LibSaver (dfy-dpg).
 // @author       laynholt
 // @license      GPL-3.0
@@ -1041,7 +1041,8 @@ ${sections}
     const [PDFLib, fontkit] = await getPdfLibs();
     const doc = await PDFLib.PDFDocument.create();
     doc.registerFontkit(fontkit);
-    const font = await doc.embedFont(await getFont(), { subset: true });
+    // Шрифт целиком (+~0,5 МБ к файлу): подмножество, которое собирает fontkit, у NotoSerif выходит битым — вместо текста мусор
+    const font = await doc.embedFont(await getFont(), { subset: false });
     doc.setTitle(book.title);
     if (book.author) doc.setAuthor(book.author);
     const A5 = PDFLib.PageSizes.A5; // удобно читать на телефоне
