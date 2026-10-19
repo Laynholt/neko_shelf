@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NekoShelf
 // @namespace    https://github.com/Laynholt/neko_shelf
-// @version      1.7.1
+// @version      1.7.2
 // @description  Скачивание манги, манхвы и ранобэ с MangaLIB, RanobeLIB, HentaiLIB, SlashLIB, ReManga, MangaBuff, MangaDex, Dynasty Scans, LilyManga, Yurivan, IMHentai, Nude-Moon, nhentai в PDF, CBZ, ZIP, EPUB, FB2, TXT и HTML. Своя читалка там, где сайт без входа показывает 404. Основан на LibSaver (dfy-dpg).
 // @author       laynholt
 // @license      GPL-3.0
@@ -677,9 +677,11 @@
     const page = await getHtml(`/${slug}.html`);
     let reader = page;
     if (!slug.includes('-online-')) {
-      const link = page.querySelector('a[href*="-online--"]')?.getAttribute('href');
+      // ссылка именно этой галереи (рядом бывают чужие); вошедшим сайт ставит ?row — «лентой», без images[N], поэтому query отбрасываем
+      const id = slug.match(/^\d+/)[0];
+      const link = [...page.querySelectorAll('a[href*="-online-"]')].map((a) => new URL(a.getAttribute('href'), location.origin)).find((u) => u.pathname.startsWith(`/${id}-online-`));
       if (!link) throw new Error('не нашёл ссылку на онлайн-чтение');
-      reader = await getHtml(abs(link));
+      reader = await getHtml(link.origin + link.pathname);
     }
     const pages = [...reader.documentElement.innerHTML.matchAll(/images\[\d+\]\.src\s*=\s*'([^']+)'/g)].map((m) => ({ urls: [abs(m[1])] }));
     const thumb = page.querySelector('img[src*="/images/thumb/"]');
