@@ -14,6 +14,9 @@ assert.deepStrictEqual(L.parseLost('https://mangalib.me/ru/manga/9065--kanojo?se
 assert.strictEqual(L.parseLost('https://mangalib.me/ru/manga/34466--x/read/v1/c1').slug, '34466--x');
 assert.strictEqual(L.parseLost('https://mangalib.me/404'), null);
 assert.strictEqual(L.parseLost(undefined), null);
+// снятые страницы выпадают, у оставшихся — исходные номера
+assert.deepStrictEqual(L.keptPages(['a', 'b', 'c', 'd'], new Set([1, 2])), [['a', 0], ['d', 3]]);
+assert.deepStrictEqual(L.keptPages(['a', 'b'], undefined), [['a', 0], ['b', 1]]);
 assert.ok(L.sameNum('01', '1') && L.sameNum('10.5', '10.5') && !L.sameNum('1', '2') && !L.sameNum('', '0'));
 
 const jwt = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.abc_DEF-123';

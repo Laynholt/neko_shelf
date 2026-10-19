@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NekoShelf
 // @namespace    https://github.com/Laynholt/neko_shelf
-// @version      1.7.2
+// @version      1.8.0
 // @description  Скачивание манги, манхвы и ранобэ с MangaLIB, RanobeLIB, HentaiLIB, SlashLIB, ReManga, MangaBuff, MangaDex, Dynasty Scans, LilyManga, Yurivan, IMHentai, Nude-Moon, nhentai в PDF, CBZ, ZIP, EPUB, FB2, TXT и HTML. Своя читалка там, где сайт без входа показывает 404. Основан на LibSaver (dfy-dpg).
 // @author       laynholt
 // @license      GPL-3.0
@@ -124,6 +124,8 @@
   // Номер тома/главы из адреса (c01) и из API ("1") — одно и то же
   const sameNum = (a, b) => String(a) === String(b) || (a !== '' && b !== '' && +a === +b);
   const chapterLabel = (ch) => `Том ${ch.volume} Глава ${ch.number}${ch.name ? ' — ' + ch.name : ''}`;
+  // Страницы главы без снятых галками: [страница, её исходный номер с 0] — номер идёт в имя файла в CBZ/ZIP
+  const keptPages = (pages, skip) => pages.map((p, i) => [p, i]).filter(([, i]) => !skip?.has(i));
   // Самое частое значение (при равенстве — то, что раньше набрало максимум)
   function mostCommon(arr) {
     const f = new Map();
@@ -316,7 +318,7 @@
   }
 
   if (typeof module === 'object' && module.exports) {
-    module.exports = { findJwt, pmToHtml, sniffExt, jpegInfo, parseSlug, parseLost, sameNum, chapterLabel, esc, safeName, fileTitle, mostCommon, crc32, infoRows, Zip, Pdf };
+    module.exports = { findJwt, pmToHtml, sniffExt, jpegInfo, parseSlug, parseLost, sameNum, chapterLabel, keptPages, esc, safeName, fileTitle, mostCommon, crc32, infoRows, Zip, Pdf };
     return;
   }
 
@@ -925,18 +927,19 @@
   }
 
   // Возвращает XHTML-фрагмент главы; каждую картинку отдаёт в addImage(buf, ext, page) -> её src
-  async function chapterBody(slug, ch, branch, addImage, onImage) {
+  async function chapterBody(slug, ch, branch, addImage, onImage, skipPages) {
     const d = await chapterData(slug, ch, branch);
 
     if (site.kind === 'manga') {
+      const kept = keptPages(d.pages, skipPages);
       const got = [];
-      await pool(d.pages.map((p) => p.urls), 3, async (urls, i) => {
+      await pool(kept.map(([p]) => p.urls), 3, async (urls, i) => {
         got[i] = await getImage(urls);
         onImage();
       });
       const out = [];
       const common = mostCommon(d.pages.map((p) => p.width).filter(Boolean)); // самая частая ширина страниц главы (из API)
-      for (let i = 0; i < got.length; i++) { out.push(await addImage(got[i].buf, got[i].ext, i, common)); got[i] = null; } // по порядку страниц
+      for (let i = 0; i < got.length; i++) { out.push(await addImage(got[i].buf, got[i].ext, kept[i][1], common)); got[i] = null; } // по порядку страниц
       return { html: out.map((src) => `<div class="page"><img src="${src}" alt=""/></div>`).join('\n') };
     }
 
@@ -1253,7 +1256,7 @@ ${sections}
       ui.status(`Глава ${i + 1}/${list.length}: ${title}`, i / list.length);
       try {
         const body = await chapterBody(slug, ch, opts.branch, (buf, ext, page, common) => addImage(buf, ext, i + 1, page, title, common),
-          () => ui.status(`Глава ${i + 1}/${list.length}: ${title} · картинок ${++imgCount}`, i / list.length));
+          () => ui.status(`Глава ${i + 1}/${list.length}: ${title} · картинок ${++imgCount}`, i / list.length), opts.skipPages?.get(ch));
         done.push({ title, html: body.html });
       } catch (e) {
         errors.push(`${title}: ${e.message}`);
@@ -1359,6 +1362,11 @@ ${sections}
   .chk{max-height:220px;overflow:auto;margin-top:6px;padding:2px 8px;border:1px solid #333;border-radius:8px;background:#262626}
   .chk label{display:flex;gap:8px;align-items:center;margin:5px 0;color:#eee;font-size:13px;cursor:pointer}
   .chk input{flex:none;margin:0;accent-color:#66bb6a}
+  .pp summary{margin:0 0 4px 24px;cursor:pointer;color:#999;font-size:12px}
+  .pg{display:grid;grid-template-columns:repeat(auto-fill,minmax(52px,1fr));gap:0 6px;margin:0 0 6px 24px;color:#999;font-size:12px}
+  .chk .pg label{margin:2px 0}
+  .pall{grid-column:1/-1;display:flex;gap:6px;margin:2px 0 4px}
+  .pall button{padding:3px 8px;border-radius:6px;border:1px solid #555;background:#333;color:#ddd;font-size:12px;cursor:pointer}
   a{color:#ff8a65}
 </style>
 <div class="panel" hidden>
@@ -1390,7 +1398,7 @@ ${sections}
     <label>Перевод</label><select class="branch"></select>
     <label>С главы</label><select class="from"></select>
     <label>По главу</label><select class="to"></select>
-    <details class="pick"><summary>Выбрать главы в диапазоне <span class="cnt"></span></summary><div class="chk"></div></details>
+    <details class="pick"><summary><span class="pt">Выбрать главы в диапазоне</span> <span class="cnt"></span></summary><div class="chk"></div></details>
     <label>Формат</label><select class="fmt"></select>
     <div class="row"><button class="go">Скачать</button><button class="stop">Отмена</button></div>
   </div>
@@ -1488,7 +1496,7 @@ ${sections}
     try {
       const info = await loadTitle(slug);
       current = { slug, info };
-      skip.clear();
+      skip.clear(); skipPages.clear(); pageCount.clear();
       $('.title').textContent = info.meta.title;
       $('.edit').hidden = false;
       const opts = info.chapters.map((ch, i) => `<option value="${i}">${esc(chapterLabel(ch))}</option>`).join('');
@@ -1510,24 +1518,87 @@ ${sections}
 
   // Галки по главам выбранного диапазона: снятые не скачиваются. Индексы снятых глав живут до смены тайтла
   const skip = new Set();
+  // Галки по страницам: глава -> снятые страницы (с 0) и число страниц, которое узнаём, когда главу раскрыли
+  const skipPages = new Map();
+  const pageCount = new Map();
+  const keptCount = (ch) => pageCount.get(ch) - (skipPages.get(ch)?.size || 0);
+  const emptyCh = (ch) => pageCount.has(ch) && !keptCount(ch); // все страницы сняты — то же, что снятая глава
+  const single = () => site.kind === 'manga' && current?.info.chapters.length === 1; // галерея: сразу страницы, без списка глав
   function pickCount() {
     const from = +$('.from').value, to = +$('.to').value;
     let n = 0;
-    for (let i = from; i <= to; i++) if (!skip.has(i)) n++;
-    $('.cnt').textContent = from > to ? '' : `(${n} из ${to - from + 1})`;
+    for (let i = from; i <= to; i++) if (!skip.has(i) && !emptyCh(current?.info.chapters[i])) n++;
+    const ch = current?.info.chapters[0];
+    $('.cnt').textContent = from > to ? '' : single() ? (pageCount.has(ch) ? `(${keptCount(ch)} из ${pageCount.get(ch)})` : '') : `(${n} из ${to - from + 1})`;
     return n;
   }
+  const pagesCnt = (ch) => (pageCount.has(ch) ? `(${keptCount(ch)} из ${pageCount.get(ch)})` : '');
   function renderPick() {
+    $('.pt').textContent = single() ? 'Выбрать страницы' : 'Выбрать главы в диапазоне';
     pickCount();
     if (!current || !$('.pick').open) return; // список строим, только когда его раскрыли — у тайтлов бывают тысячи глав
+    if (single()) { $('.chk').innerHTML = trusted('<div class="pg" data-i="0"></div>'); renderPages($('.chk .pg')); return; }
     const from = +$('.from').value, to = +$('.to').value, rows = [];
-    for (let i = from; i <= to; i++) rows.push(`<label><input type="checkbox" data-i="${i}"${skip.has(i) ? '' : ' checked'}>${esc(chapterLabel(current.info.chapters[i]))}</label>`);
+    for (let i = from; i <= to; i++) {
+      rows.push(`<label><input type="checkbox" data-i="${i}"${skip.has(i) ? '' : ' checked'}>${esc(chapterLabel(current.info.chapters[i]))}</label>`);
+      if (site.kind === 'manga') rows.push(`<details class="pp" data-i="${i}"><summary>Страницы <span class="pc">${pagesCnt(current.info.chapters[i])}</span></summary><div class="pg" data-i="${i}"></div></details>`);
+    }
     $('.chk').innerHTML = trusted(rows.join(''));
+  }
+  // Сетка галок с номерами страниц главы; список страниц главы грузим один раз, при первом раскрытии
+  async function renderPages(box) {
+    const cur = current, ch = cur.info.chapters[+box.dataset.i];
+    if (!pageCount.has(ch)) {
+      box.textContent = 'Загружаю список страниц…';
+      try {
+        const n = (await chapterData(cur.slug, ch, $('.branch').value)).pages.length;
+        if (current !== cur) return;
+        pageCount.set(ch, n);
+      } catch (e) { box.textContent = 'Ошибка: ' + e.message; return; }
+    }
+    const s = skipPages.get(ch);
+    box.innerHTML = trusted('<div class="pall"><button type="button" data-all="1">все</button><button type="button" data-all="0">снять все</button></div>' +
+      Array.from({ length: pageCount.get(ch) }, (_, p) => `<label><input type="checkbox" data-p="${p}"${s?.has(p) ? '' : ' checked'}>${p + 1}</label>`).join(''));
+    pageCountChanged(box);
+  }
+  function pageCountChanged(box) {
+    const pc = box.closest('.pp')?.querySelector('.pc');
+    if (pc) pc.textContent = pagesCnt(current.info.chapters[+box.dataset.i]);
+    pickCount();
+  }
+  // Страницы from..to (с 0) главы из сетки box отмечаем или снимаем — в данных и в галках
+  function setPages(box, from, to, on) {
+    const ch = current.info.chapters[+box.dataset.i];
+    if (!skipPages.has(ch)) skipPages.set(ch, new Set());
+    for (let p = from; p <= to; p++) {
+      if (on) skipPages.get(ch).delete(p); else skipPages.get(ch).add(p);
+      const c = box.querySelector(`input[data-p="${p}"]`);
+      if (c) c.checked = on;
+    }
+    pageCountChanged(box);
   }
   $('.pick').addEventListener('toggle', renderPick);
   $('.from').addEventListener('change', renderPick);
   $('.to').addEventListener('change', renderPick);
+  // другой перевод — другие страницы: выбор страниц сбрасываем
+  $('.branch').addEventListener('change', () => { skipPages.clear(); pageCount.clear(); renderPick(); });
+  // toggle не всплывает — ловим раскрытие «Страницы» главы на погружении
+  $('.chk').addEventListener('toggle', (e) => { if (e.target.classList?.contains('pp') && e.target.open) renderPages(e.target.querySelector('.pg')); }, true);
+  let shift = false, lastPage = null; // Shift+клик — диапазон от прошлой галки этой главы
+  $('.chk').addEventListener('click', (e) => {
+    shift = e.shiftKey;
+    const b = e.target.closest('button[data-all]');
+    if (b) { const box = b.closest('.pg'); setPages(box, 0, pageCount.get(current.info.chapters[+box.dataset.i]) - 1, b.dataset.all === '1'); }
+  });
   $('.chk').addEventListener('change', (e) => {
+    const box = e.target.closest('.pg');
+    if (box) {
+      const p = +e.target.dataset.p;
+      const from = shift && lastPage?.box === box ? Math.min(lastPage.p, p) : p;
+      const to = shift && lastPage?.box === box ? Math.max(lastPage.p, p) : p;
+      lastPage = { box, p };
+      return setPages(box, from, to, e.target.checked);
+    }
     const i = +e.target.dataset.i;
     if (e.target.checked) skip.delete(i); else skip.add(i);
     pickCount();
@@ -1537,11 +1608,13 @@ ${sections}
     if (state.busy || !current) return;
     const from = +$('.from').value, to = +$('.to').value;
     if (from > to) return ui.status('«С главы» должна быть не позже «По главу»');
-    if (!pickCount()) return ui.status('Не выбрано ни одной главы');
+    if (!pickCount()) return ui.status(single() ? 'Не выбрано ни одной страницы' : 'Не выбрано ни одной главы');
     state.busy = true; state.cancel = false;
     $('.go').disabled = true;
     try {
-      const { blob, name, errors } = await download(current.slug, current.info, { from, to, skip, branch: $('.branch').value, format: $('.fmt').value }, ui);
+      const skipAll = new Set(skip);
+      for (let i = from; i <= to; i++) if (emptyCh(current.info.chapters[i])) skipAll.add(i);
+      const { blob, name, errors } = await download(current.slug, current.info, { from, to, skip: skipAll, skipPages, branch: $('.branch').value, format: $('.fmt').value }, ui);
       if (lastUrl) URL.revokeObjectURL(lastUrl); // освобождаем прошлый файл
       const url = lastUrl = URL.createObjectURL(blob);
       const a = document.createElement('a');
