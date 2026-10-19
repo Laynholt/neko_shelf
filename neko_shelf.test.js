@@ -33,6 +33,13 @@ assert.strictEqual(L.sniffExt(new Uint8Array([0x52, 0x49, 0x46, 0x46, 0, 0, 0, 0
 assert.strictEqual(L.sniffExt(new Uint8Array([0, 0, 0, 0x1c, ...new TextEncoder().encode('ftypavif')]).buffer), 'avif');
 assert.throws(() => L.sniffExt(new TextEncoder().encode('<html>').buffer));
 assert.strictEqual(L.safeName('a/b:c?'), 'a b c');
+// имя файла: автор из тега, скобки из названия убираем, запрещённые символы -> «-»
+assert.strictEqual(L.fileTitle('(C105) [Circle (Art)] Title: Sub | AC/DC (Parody) [English]', 'Art'), '[Art] - Title - Sub - AC-DC');
+assert.strictEqual(L.fileTitle('[Circle (Art)] Title', ''), '[Circle (Art)] - Title');
+assert.strictEqual(L.fileTitle('(GatorChan) Leo and Amalia', ''), '[GatorChan] - Leo and Amalia');
+assert.strictEqual(L.fileTitle('Морино $ & Ко', 'Автор'), '[Автор] - Морино - Ко');
+assert.strictEqual(L.fileTitle('Без автора', ''), 'Без автора');
+assert.strictEqual(L.fileTitle('[Only]', 'A'), '[A] - Only');
 assert.strictEqual(L.mostCommon([800, 690, 690, 800, 690]), 690);
 assert.strictEqual(L.mostCommon([2, 20000]), 2);
 assert.strictEqual(L.mostCommon([]), undefined);

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NekoShelf
 // @namespace    https://github.com/Laynholt/neko_shelf
-// @version      1.7.0
+// @version      1.7.1
 // @description  Скачивание манги, манхвы и ранобэ с MangaLIB, RanobeLIB, HentaiLIB, SlashLIB, ReManga, MangaBuff, MangaDex, Dynasty Scans, LilyManga, Yurivan, IMHentai, Nude-Moon, nhentai в PDF, CBZ, ZIP, EPUB, FB2, TXT и HTML. Своя читалка там, где сайт без входа показывает 404. Основан на LibSaver (dfy-dpg).
 // @author       laynholt
 // @license      GPL-3.0
@@ -132,6 +132,15 @@
     return best;
   }
   const safeName = (s) => String(s).replace(/[\\/:*?"<>|\n\r\t]+/g, ' ').trim().slice(0, 120) || 'title';
+  // имя файла «[Автор] - Название»: из названия убираем всё в [] и (), запрещённые символы меняем на «-».
+  // Автор — из тега; нет тега — из первых [] названия (у галерей там круг/художник) или из () в его начале
+  function fileTitle(title, author) {
+    const t = String(title || '');
+    const clean = (s) => s.replace(/\s*(?:[\\/:*?"<>|$&]+\s*)+/g, (m) => (/\s/.test(m) ? ' - ' : '-')).replace(/\s+/g, ' ').replace(/^[\s-]+|[\s-]+$/g, '');
+    const a = clean(author || t.match(/\[([^\]]+)\]/)?.[1] || t.match(/^\s*\(([^)]+)\)/)?.[1] || '').slice(0, 60);
+    const name = clean(t.replace(/\[[^\]]*\]|\([^)]*\)/g, ' ')) || clean(t.replace(/[[\]()]/g, ' ')) || 'title'; // название целиком в скобках — оставляем текст без скобок
+    return (a ? `[${a}] - ${name}` : name).slice(0, 150);
+  }
 
   // Ищет JWT в строке / JSON / вложенных объектах (сайт хранит токен в localStorage под разными ключами)
   function findJwt(v) {
@@ -307,7 +316,7 @@
   }
 
   if (typeof module === 'object' && module.exports) {
-    module.exports = { findJwt, pmToHtml, sniffExt, jpegInfo, parseSlug, parseLost, sameNum, chapterLabel, esc, safeName, mostCommon, crc32, infoRows, Zip, Pdf };
+    module.exports = { findJwt, pmToHtml, sniffExt, jpegInfo, parseSlug, parseLost, sameNum, chapterLabel, esc, safeName, fileTitle, mostCommon, crc32, infoRows, Zip, Pdf };
     return;
   }
 
@@ -614,7 +623,8 @@
     const middle = [...doc.querySelectorAll('.manga__middle-link')]; // под названием: тип, год, статус (у статуса в адресе status_id)
     const meta = {
       title: doc.querySelector('.manga__name')?.textContent.trim() || slug,
-      author: '',
+      // на странице автора нет; в разметке schema.org поле есть, но у многих тайтлов пустое
+      author: [...doc.querySelectorAll('script[type="application/ld+json"]')].flatMap((s) => { try { return [].concat(JSON.parse(s.textContent)); } catch { return []; } }).map((x) => x.author?.name || x.author).find((a) => typeof a === 'string' && a.trim())?.trim() || '',
       description: doc.querySelector('.manga__description')?.textContent.trim() || '',
       cover: abs((doc.querySelector('.manga__img img') || doc.querySelector('.manga__poster img'))?.getAttribute('src')),
       type: middle[0]?.textContent.trim(),
@@ -661,6 +671,7 @@
     }, pages);
   }
 
+  const MANGAKA = '.tbl2 a[href*="mangaka/"]'; // nude-moon: «Автор: …» в сведениях о галерее
   // nude-moon: у галереи есть страница онлайн-чтения, где все страницы перечислены в JS: images[N].src = '…'
   async function nudemoonTitle(slug) {
     const page = await getHtml(`/${slug}.html`);
@@ -674,7 +685,7 @@
     const thumb = page.querySelector('img[src*="/images/thumb/"]');
     return gallery({
       title: (page.querySelector('h1') || reader.querySelector('h1'))?.textContent.trim() || slug,
-      author: '',
+      author: [...page.querySelectorAll(MANGAKA)].concat(page === reader ? [] : [...reader.querySelectorAll(MANGAKA)]).map((a) => a.textContent.trim()).filter((v, i, all) => all.indexOf(v) === i).join(', '),
       description: '',
       cover: [pages[0]?.urls[0], abs(thumb?.getAttribute('src'))].filter(Boolean), // миниатюра — уменьшенная первая страница
     }, pages);
@@ -1274,10 +1285,10 @@ ${sections}
         : await textPdf(book, done, emb, cover);
     } else { // txt: с картинками — архивом, без них — просто текстом
       const txt = txtBook(book, done, infoTxt());
-      if (images.length) { zip.add(`${safeName(book.title)}.txt`, txt); blob = zip.blob('application/zip'); ext = 'zip'; }
+      if (images.length) { zip.add(`${fileTitle(book.title, book.author || book.artist)}.txt`, txt); blob = zip.blob('application/zip'); ext = 'zip'; }
       else blob = new Blob([txt], { type: 'text/plain;charset=utf-8' });
     }
-    return { blob, name: `${safeName(book.title)}${range}.${ext}`, errors };
+    return { blob, name: `${fileTitle(book.title, book.author || book.artist)}${range}.${ext}`, errors };
   }
 
   // ---------- интерфейс ----------
