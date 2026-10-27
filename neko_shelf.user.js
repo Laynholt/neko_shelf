@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NekoShelf
 // @namespace    https://github.com/Laynholt/neko_shelf
-// @version      1.8.1
+// @version      1.8.2
 // @description  Скачивание манги, манхвы и ранобэ с MangaLIB, RanobeLIB, HentaiLIB, SlashLIB, ReManga, MangaBuff, MangaDex, Dynasty Scans, LilyManga, Yurivan, IMHentai, Nude-Moon, nhentai в PDF, CBZ, ZIP, EPUB, FB2, TXT и HTML. Своя читалка там, где сайт без входа показывает 404. Основан на LibSaver (dfy-dpg).
 // @author       laynholt
 // @license      GPL-3.0
@@ -339,6 +339,16 @@
     : typeof GM_xmlhttpRequest === 'function' ? GM_xmlhttpRequest : null;
 
   const GM_HOSTS = /(^|\.)(cdnlibs\.org|imglib\.info|hentaicdn\.org|mangalib\.(me|org)|ranobelib\.me|novelslib\.me|hentailib\.(me|org)|shlib\.life|reimg2\.org|mangabuff\.ru|imhentai\.xxx|nude-moon\.org|nhentai\.net|mangadex\.(org|network)|lilymanga\.net|dynasty-scans\.com|yurivan\.com|cdn\.jsdelivr\.net)$/;
+  function httpError(status, headers) {
+    const e = Object.assign(new Error('HTTP ' + status), { status });
+    const value = typeof headers === 'string' ? headers.match(/^retry-after:\s*([^\r\n]+)/im)?.[1].trim() : headers?.get('Retry-After');
+    if (status === 429 && value) {
+      const ms = /^\d+$/.test(value) ? Number(value) * 1000 : Date.parse(value) - Date.now();
+      if (Number.isFinite(ms) && ms >= 0) e.retryAfter = ms;
+    }
+    return e;
+  }
+
   function gmGet(url, responseType, headers) {
     return new Promise((resolve, reject) => {
       if (!gmXhr) return reject(new Error('менеджер скриптов не дал GM.xmlHttpRequest'));
@@ -350,7 +360,7 @@
       if (u.protocol !== 'https:' || !GM_HOSTS.test(u.hostname)) return reject(Object.assign(new Error('чужой сервер: ' + u.hostname), { status: 403 }));
       gmXhr({
         method: 'GET', url, responseType, headers, timeout: 60000,
-        onload: (r) => (r.status >= 200 && r.status < 300 ? resolve(r.response) : reject(Object.assign(new Error('HTTP ' + r.status), { status: r.status }))),
+        onload: (r) => (r.status >= 200 && r.status < 300 ? resolve(r.response) : reject(httpError(r.status, r.responseHeaders))),
         onerror: () => reject(new Error('сетевая ошибка')),
         ontimeout: () => reject(new Error('таймаут')),
       });
@@ -358,11 +368,27 @@
   }
 
   // 429/5xx/сеть — ждём и повторяем; 4xx (кроме 429) — сразу ошибка
+  let rateLimitUntil = 0; // 429 останавливает и остальные потоки скачивания
+  let nextRequestAt = 0;
+  async function waitForRequest(downloading) {
+    await settingsLoaded;
+    while (Date.now() < Math.max(rateLimitUntil, nextRequestAt)) {
+      if (downloading && state.cancel) throw new Error('Отменено');
+      const left = Math.max(rateLimitUntil, nextRequestAt) - Date.now();
+      if (Date.now() < rateLimitUntil) ui.status(`Сервер ограничил запросы (HTTP 429). Повтор через ${Math.ceil(left / 1000)} с…`);
+      await sleep(Math.min(1000, left));
+    }
+    if (downloading && state.cancel) throw new Error('Отменено');
+    nextRequestAt = Date.now() + settings.requestDelay * 1000;
+  }
   async function retry(fn, tries = 5) {
+    const downloading = state.busy;
     for (let i = 0; ; i++) {
+      await waitForRequest(downloading);
       try { return await fn(); } catch (e) {
-        if (i >= tries - 1 || (e.status && e.status !== 429 && e.status < 500)) throw e;
-        await sleep((e.status === 429 ? 5000 : 1500) * (i + 1));
+        if (e.status === 429) rateLimitUntil = Math.max(rateLimitUntil, Date.now() + Math.max(1000, e.retryAfter ?? 60000 * (i + 1)));
+        if ((downloading && state.cancel) || i >= tries - 1 || (e.status && e.status !== 429 && e.status < 500)) throw e;
+        if (e.status !== 429) await sleep(1500 * (i + 1));
       }
     }
   }
@@ -383,7 +409,7 @@
     if (t) headers.Authorization = 'Bearer ' + t;
     return retry(async () => {
       const r = await fetch(site.api + path, { headers });
-      if (!r.ok) throw Object.assign(new Error(`API ${r.status}`), { status: r.status });
+      if (!r.ok) throw httpError(r.status, r.headers);
       return (await r.json()).data;
     });
   }
@@ -392,9 +418,10 @@
   // Поэтому сначала обычный fetch со страницы (Referer ставит браузер; у сервера скачивания CORS открыт),
   // а если сервер без CORS — через GM.xmlHttpRequest
   function getBuf(url) {
+    const downloading = state.busy;
     return fetch(url).then(
-      (r) => (r.ok ? r.arrayBuffer() : Promise.reject(Object.assign(new Error('HTTP ' + r.status), { status: r.status }))),
-      () => gmGet(url, 'arraybuffer', { Referer: location.origin + '/' }),
+      (r) => (r.ok ? r.arrayBuffer() : Promise.reject(httpError(r.status, r.headers))),
+      async () => { await waitForRequest(downloading); return gmGet(url, 'arraybuffer', { Referer: location.origin + '/' }); },
     );
   }
 
@@ -407,6 +434,7 @@
         if (i) state.fromBackup++;
         return { buf, ext: sniffExt(buf) };
       } catch (e) {
+        if (state.cancel) throw e;
         // вопрос про сжатые AVIF — только для Lib; у остальных запасные адреса равноценны, берём молча
         if (i + 1 >= urls.length || (site.type === 'lib' && !(await askFallback(e)))) throw e;
       }
@@ -506,7 +534,7 @@
   const names = (a) => (a || []).map((x) => x?.name).filter(Boolean);
   const yearOf = (s) => String(s ?? '').match(/\d{4}/)?.[0] || '';
   const otherTitles = (title, list) => [...new Set(list.map((x) => String(x ?? '').trim()).filter((x) => x && x !== title))];
-  const checkedJson = (r) => (r.ok ? r.json() : Promise.reject(Object.assign(new Error(`API ${r.status}`), { status: r.status })));
+  const checkedJson = (r) => (r.ok ? r.json() : Promise.reject(httpError(r.status, r.headers)));
 
   // Lib (MangaLIB, RanobeLIB, HentaiLIB, SlashLIB)
   async function libTitle(slug) {
@@ -592,7 +620,7 @@
   // MangaBuff: API нет — список глав и страницы берём из HTML сайта
   // Декодируем по кодировке из заголовка или <meta>: nude-moon, например, отдаёт windows-1251, а r.text() понимает только UTF-8
   async function getHtml(url, init) {
-    const r = await retry(() => fetch(url, init).then((r) => (r.ok ? r : Promise.reject(Object.assign(new Error('HTTP ' + r.status), { status: r.status })))));
+    const r = await retry(() => fetch(url, init).then((r) => (r.ok ? r : Promise.reject(httpError(r.status, r.headers)))));
     const buf = await r.arrayBuffer();
     const head = new TextDecoder('latin1').decode(buf.slice(0, 2048));
     const charset = (r.headers.get('content-type') || '').match(/charset=["']?([\w-]+)/i)?.[1] || head.match(/charset=["']?([\w-]+)/i)?.[1] || 'utf-8';
@@ -1091,7 +1119,7 @@ ${sections}
     ['https://cdn.jsdelivr.net/npm/@pdf-lib/fontkit@1.1.1/dist/fontkit.umd.min.js', 'd8df561b9fba98e24f2e5130e40948809281bbbc55a20c412359f1a0a5eb35a6'],
   ];
   async function loadUmd([url, sha256]) {
-    const buf = await retry(() => fetch(url).then((r) => (r.ok ? r.arrayBuffer() : Promise.reject(Object.assign(new Error('HTTP ' + r.status), { status: r.status })))), 3);
+    const buf = await retry(() => fetch(url).then((r) => (r.ok ? r.arrayBuffer() : Promise.reject(httpError(r.status, r.headers)))), 3);
     const hash = [...new Uint8Array(await crypto.subtle.digest('SHA-256', buf))].map((b) => pad(b.toString(16), 2)).join('');
     if (hash !== sha256) throw new Error('файл библиотеки изменён на CDN: ' + url);
     const module = { exports: {} };
@@ -1176,12 +1204,13 @@ ${sections}
   const state = { busy: false, cancel: false, fallback: null, fromBackup: 0 };
 
   // Настройки общие для всех сайтов — в хранилище менеджера скриптов; без него — в localStorage текущего сайта
-  const settings = { sameWidth: true, cover: true, info: true };
+  const settings = { sameWidth: true, cover: true, info: true, requestDelay: 0 };
   const gmGetValue = typeof GM !== 'undefined' && GM.getValue ? GM.getValue.bind(GM) : typeof GM_getValue === 'function' ? async (k, d) => GM_getValue(k, d) : null;
   const gmSetValue = typeof GM !== 'undefined' && GM.setValue ? GM.setValue.bind(GM) : typeof GM_setValue === 'function' ? async (k, v) => GM_setValue(k, v) : null;
   const SETTINGS_KEY = 'neko-shelf-settings';
   const settingsLoaded = (async () => {
     try { Object.assign(settings, gmGetValue ? await gmGetValue(SETTINGS_KEY, {}) : JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}')); } catch { /* значения по умолчанию */ }
+    settings.requestDelay = Math.max(0, Math.min(60, Number(settings.requestDelay) || 0));
   })();
   async function saveSettings() {
     try { gmSetValue ? await gmSetValue(SETTINGS_KEY, { ...settings }) : localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); } catch { /* не сохранилось — действует до перезагрузки */ }
@@ -1263,6 +1292,7 @@ ${sections}
           () => ui.status(`Глава ${i + 1}/${list.length}: ${title} · картинок ${++imgCount}`, i / list.length), opts.skipPages?.get(ch));
         done.push({ title, html: body.html });
       } catch (e) {
+        if (state.cancel) throw e;
         errors.push(`${title}: ${e.message}`);
         done.push({ title, html: `<p>[Глава не скачана: ${esc(e.message)}]</p>` });
       }
@@ -1272,6 +1302,7 @@ ${sections}
     if (errors.length === list.length) throw new Error('ни одна глава не скачалась:\n' + errors.join('\n'));
 
     if (fmt === 'cbz') await addCover();
+    if (state.cancel) throw new Error('Отменено');
     ui.status('Сборка файла…', 1);
     let blob, ext = fmt;
     if (fmt === 'cbz') {
@@ -1332,6 +1363,8 @@ ${sections}
   .tabs button[aria-selected="true"]{background:#2f2f2f;color:#fff;box-shadow:0 1px 3px #0006}
   .opt{display:flex;gap:10px;align-items:flex-start;margin:0 0 8px;padding:10px;border:1px solid #333;border-radius:8px;background:#262626;color:#eee;font-size:13px;cursor:pointer}
   .opt input{flex:none;width:18px;height:18px;margin:1px 0 0;accent-color:#66bb6a;cursor:pointer}
+  .opt span{flex:1}
+  .opt input[type=number]{width:72px;height:auto;box-sizing:border-box;padding:6px;border:1px solid #555;border-radius:6px;background:#2a2a2a;color:#eee;font:inherit;cursor:text}
   .opt small{display:block;margin-top:3px;color:#888;font-size:11px}
   .hint{margin:4px 2px 0;font-size:11px;color:#777}
   .hero{display:flex;align-items:center;gap:12px;padding:12px;border-radius:10px;background:linear-gradient(135deg,#2d2540,#1d2b28)}
@@ -1385,6 +1418,7 @@ ${sections}
       <label class="opt"><input type="checkbox" data-key="sameWidth"><span>Одинаковая ширина страниц<small>PDF и CBZ: страницы приводятся к самой частой ширине — широкие ужимаются, узкие растягиваются. Выключите, чтобы оставить исходные размеры.</small></span></label>
       <label class="opt"><input type="checkbox" data-key="cover"><span>Обложка первой страницей<small>Во всех форматах, кроме TXT.</small></span></label>
       <label class="opt"><input type="checkbox" data-key="info"><span>Сведения о тайтле в начале файла<small>TXT, HTML, PDF ранобэ и ZIP (info.txt): названия, автор, год, статус, жанры, теги, перевод, ссылка. В EPUB, FB2, CBZ и свойства PDF они пишутся всегда.</small></span></label>
+      <label class="opt"><span>Задержка между запросами, с<small>0 — без дополнительной паузы. Например, 0,5 — не чаще двух запросов в секунду. Общая для запросов глав и картинок; максимум 60 с.</small></span><input type="number" data-key="requestDelay" min="0" max="60" step="0.1" required></label>
       <p class="hint">Сохраняется сразу и действует на всех сайтах.</p>
     </div>
     <div class="tab" data-tab="about" role="tabpanel" hidden>
@@ -1423,11 +1457,18 @@ ${sections}
       // форма ошибки сразу с версией, страницей и браузером — правится перед отправкой
       $('.bug').href = `${REPO}/issues/new?` + new URLSearchParams({ template: 'bug_report.yml', version: VERSION, page: location.href, browser: navigator.userAgent });
       await settingsLoaded;
-      for (const cb of root.querySelectorAll('.opt input')) cb.checked = !!settings[cb.dataset.key];
+      for (const input of root.querySelectorAll('.opt input')) {
+        if (input.type === 'checkbox') input.checked = !!settings[input.dataset.key];
+        else input.value = settings[input.dataset.key];
+      }
     }
     positionPanel();
   });
-  for (const cb of root.querySelectorAll('.opt input')) cb.addEventListener('change', () => { settings[cb.dataset.key] = cb.checked; saveSettings(); });
+  for (const input of root.querySelectorAll('.opt input')) input.addEventListener('change', () => {
+    if (!input.reportValidity()) return;
+    settings[input.dataset.key] = input.type === 'checkbox' ? input.checked : input.valueAsNumber;
+    saveSettings();
+  });
   for (const t of root.querySelectorAll('[role=tab]')) {
     t.addEventListener('click', () => {
       for (const x of root.querySelectorAll('[role=tab]')) x.setAttribute('aria-selected', x === t);
