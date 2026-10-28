@@ -1,0 +1,7 @@
+contact_links:
+  - name: Предложить идею или новый сайт
+    url: https://github.com/Laynholt/neko_shelf/discussions/new?category=ideas
+    about: Пожелания и предложения — в обсуждениях, там их можно обсудить и поддержать.
+  - name: Вопросы и обсуждения
+    url: https://github.com/Laynholt/neko_shelf/discussions
+    about: Как пользоваться, что не понятно и всё остальное.

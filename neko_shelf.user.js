@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         NekoShelf
 // @namespace    https://github.com/Laynholt/neko_shelf
-// @version      1.8.2
-// @description  Скачивание манги, манхвы и ранобэ с MangaLIB, RanobeLIB, HentaiLIB, SlashLIB, ReManga, MangaBuff, MangaDex, Dynasty Scans, LilyManga, Yurivan, IMHentai, Nude-Moon, nhentai в PDF, CBZ, ZIP, EPUB, FB2, TXT и HTML. Своя читалка там, где сайт без входа показывает 404. Основан на LibSaver (dfy-dpg).
+// @version      1.9.0
+// @description  Скачивание манги, манхвы и ранобэ с MangaLIB, RanobeLIB, HentaiLIB, SlashLIB, ReManga, MangaBuff, MangaDex, Dynasty Scans, LilyManga, Yurivan, ReadManga, SelfManga, SeiManga, IMHentai, Nude-Moon, nhentai в PDF, CBZ, ZIP, EPUB, FB2, TXT и HTML. Своя читалка там, где сайт без входа показывает 404. Основан на LibSaver (dfy-dpg).
 // @author       laynholt
 // @license      GPL-3.0
 // @homepageURL  https://github.com/Laynholt/neko_shelf
@@ -42,6 +42,14 @@
 // @match        https://*.dynasty-scans.com/*
 // @match        https://yurivan.com/*
 // @match        https://*.yurivan.com/*
+// @match        https://readmanga.me/*
+// @match        https://*.readmanga.me/*
+// @match        https://zazaza.me/*
+// @match        https://*.zazaza.me/*
+// @match        https://selfmanga.live/*
+// @match        https://*.selfmanga.live/*
+// @match        https://seimanga.me/*
+// @match        https://*.seimanga.me/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM.xmlHttpRequest
 // @grant        GM_getValue
@@ -68,6 +76,7 @@
 // @connect      lilymanga.net
 // @connect      dynasty-scans.com
 // @connect      yurivan.com
+// @connect      one-way.work
 // @connect      cdn.jsdelivr.net
 // @run-at       document-start
 // @noframes
@@ -96,6 +105,9 @@
     { re: /(^|\.)lilymanga\.net$/, type: 'madara', kind: 'manga', slug: /^\/((?:gl|manga|manhwa|webtoon)\/[^/]+)/ },
     // подборка артов (…/images) проверяется раньше серии, иначе /series/x/images распознается как серия
     { re: /(^|\.)dynasty-scans\.com$/, type: 'dynasty', kind: 'manga', slug: /^\/((?:authors|series|doujins|pairings|tags|scanlators)\/[^/?#]+\/images|(?:series|anthologies|chapters|images)\/[^/?#]+)/ },
+    // GroupLe: ReadManga (и зеркало ZazaZa), SelfManga, SeiManga. Тайтл — /{slug}, глава — /{slug}/vol1/2;
+    // служебные страницы сайта (/list, /news, …) тайтлами не считаем
+    { re: /(^|\.)(readmanga\.me|zazaza\.me|selfmanga\.live|seimanga\.me)$/, type: 'grouple', kind: 'manga', slug: /^\/(?!(?:list|news|internal|search|collection|review|quote|forum|user|private|chat|admin|logoff)\/?$)(\w+)(?:\/vol[\d.]+\/[\d.]+)?\/?$/ },
     { re: /(^|\.)yurivan\.com$/, type: 'yurivan', kind: 'manga', slug: /^\/(?:[a-z]{2}\/)?story\/([0-9a-f-]{36})/ },
   ];
   // Набор как в оригинале; первый — по умолчанию (манга — PDF, ранобэ — TXT)
@@ -317,8 +329,20 @@
     ].filter(([, v]) => v);
   }
 
+  // GroupLe (ReadManga, SelfManga, SeiManga): страницы главы — в JS читалки
+  // rm_h.readerInit(chapterInfo, [['https://сервер/', '', "путь?токен", ширина, высота, ''], …], …)
+  function grouplePages(html) {
+    const i = html.indexOf('rm_h.readerInit(');
+    const list = i < 0 ? '' : html.slice(i, html.indexOf(']]', i) + 2);
+    return [...list.matchAll(/\[\s*['"]([^'"]+)['"]\s*,\s*['"][^'"]*['"]\s*,\s*['"]([^'"]+)['"]\s*,\s*(\d+)\s*,\s*(\d+)/g)].map(([, host, path, w, h]) => {
+      const url = new URL(path, host).href;
+      // сама читалка грузит адрес без токена в query — он запасной, если токен истёк
+      return { urls: [...new Set([url, url.split('?')[0]])], width: +w, height: +h };
+    });
+  }
+
   if (typeof module === 'object' && module.exports) {
-    module.exports = { findJwt, pmToHtml, sniffExt, jpegInfo, parseSlug, parseLost, sameNum, chapterLabel, keptPages, esc, safeName, fileTitle, mostCommon, crc32, infoRows, Zip, Pdf };
+    module.exports = { findJwt, pmToHtml, sniffExt, jpegInfo, parseSlug, parseLost, sameNum, chapterLabel, keptPages, esc, safeName, fileTitle, mostCommon, crc32, infoRows, grouplePages, Zip, Pdf };
     return;
   }
 
@@ -338,7 +362,7 @@
   const gmXhr = typeof GM !== 'undefined' && GM.xmlHttpRequest ? GM.xmlHttpRequest.bind(GM)
     : typeof GM_xmlhttpRequest === 'function' ? GM_xmlhttpRequest : null;
 
-  const GM_HOSTS = /(^|\.)(cdnlibs\.org|imglib\.info|hentaicdn\.org|mangalib\.(me|org)|ranobelib\.me|novelslib\.me|hentailib\.(me|org)|shlib\.life|reimg2\.org|mangabuff\.ru|imhentai\.xxx|nude-moon\.org|nhentai\.net|mangadex\.(org|network)|lilymanga\.net|dynasty-scans\.com|yurivan\.com|cdn\.jsdelivr\.net)$/;
+  const GM_HOSTS = /(^|\.)(cdnlibs\.org|imglib\.info|hentaicdn\.org|mangalib\.(me|org)|ranobelib\.me|novelslib\.me|hentailib\.(me|org)|shlib\.life|reimg2\.org|mangabuff\.ru|imhentai\.xxx|nude-moon\.org|nhentai\.net|mangadex\.(org|network)|lilymanga\.net|dynasty-scans\.com|yurivan\.com|one-way\.work|cdn\.jsdelivr\.net)$/;
   function httpError(status, headers) {
     const e = Object.assign(new Error('HTTP ' + status), { status });
     const value = typeof headers === 'string' ? headers.match(/^retry-after:\s*([^\r\n]+)/im)?.[1].trim() : headers?.get('Retry-After');
@@ -912,10 +936,50 @@
     return { pages: srcs.filter((u) => u.startsWith(folder + '/')).map((u) => ({ urls: [abs(u)] })) };
   }
 
+  // GroupLe: все главы — таблицей на странице тайтла (от новых к старым), адрес главы /{тайтл}/vol{том}/{глава}.
+  // mtr=true — согласие «мне есть 18», без него сайт вместо читалки 18+ показывает предупреждение
+  const mtr = (u) => { const x = new URL(u, location.origin); x.searchParams.set('mtr', 'true'); return x.href; };
+  async function groupleTitle(slug) {
+    const doc = await getHtml(mtr(`/${slug}`));
+    const all = (s) => [...new Set([...doc.querySelectorAll(s)].map((e) => e.textContent.trim().replace(/\s+/g, ' ')).filter(Boolean))];
+    const chapters = [...doc.querySelectorAll('tr.item-row a.chapter-link')].map((a) => {
+      const [, volume, number] = a.getAttribute('href').match(/\/vol([\d.]+)\/([\d.]+)/) || [];
+      // текст ссылки: «1 - 2 Обучение (2)» — без «том - глава» и пометки «новое»
+      const name = a.cloneNode(true);
+      name.querySelector('sup')?.remove();
+      return volume && { volume, number, name: name.textContent.trim().replace(/\s+/g, ' ').replace(/^[\d.]+\s*-\s*[\d.]+\s*/, ''), url: mtr(a.getAttribute('href')) };
+    }).filter(Boolean).sort(byNumber);
+    if (!chapters.length && !doc.querySelector('.cr-hero-names__main')) throw new Error('не нашёл тайтл на странице');
+    const detail = (t) => [...doc.querySelectorAll('.cr-info-details-item')].find((e) => e.querySelector('.cr-info-details-item__title')?.textContent.trim() === t)?.querySelector('.cr-info-details-item__content')?.textContent.trim();
+    const main = doc.querySelector('.cr-hero-names__main')?.textContent.trim() || slug;
+    // роль над именем: «Автор», «Сценарист», «Художник»
+    const people = (re) => [...new Set([...doc.querySelectorAll('.cr-main-person-item')].filter((e) => re.test(e.querySelector('.cr-main-person-item__role')?.textContent || ''))
+      .flatMap((e) => [...e.querySelectorAll('.cr-main-person-item__name')].map((n) => n.textContent.trim())))].join(', ');
+    return {
+      meta: {
+        title: main,
+        author: people(/автор|сценарист/i) || people(/./),
+        artist: people(/художник/i),
+        description: doc.querySelector('.cr-description__content')?.textContent.trim() || '',
+        cover: abs(doc.querySelector('img.cr-hero-poster__img')?.getAttribute('src')),
+        alt: otherTitles(main, all('.cr-hero-names__alt').flatMap((s) => s.split(' / '))),
+        year: yearOf(doc.querySelector('a[href*="/list/year/"]')?.textContent), status: detail('Выпуск'),
+        genres: all('a[href*="/list/genre/"]'),
+        tags: all('a[href*="/list/tag/"]').map((s) => s.replace(/^#\s*/, '')),
+      },
+      chapters,
+      branches: new Map(),
+    };
+  }
+  async function groupleChapter(slug, ch) {
+    return { pages: grouplePages((await getHtml(ch.url)).documentElement.innerHTML) };
+  }
+
   const ADAPTERS = {
     lib: [libTitle, libChapter], remanga: [remangaTitle, remangaChapter], mangabuff: [mangabuffTitle, mangabuffChapter],
     imhentai: [imhentaiTitle, galleryChapter], nudemoon: [nudemoonTitle, galleryChapter], nhentai: [nhentaiTitle, galleryChapter],
     mangadex: [mangadexTitle, mangadexChapter], madara: [madaraTitle, madaraChapter], dynasty: [dynastyTitle, dynastyChapter], yurivan: [yurivanTitle, yurivanChapter],
+    grouple: [groupleTitle, groupleChapter],
   };
   const loadTitle = (slug) => ADAPTERS[site.type][0](slug);
   async function chapterData(slug, ch, branch) {

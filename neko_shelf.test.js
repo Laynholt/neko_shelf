@@ -19,6 +19,13 @@ assert.strictEqual(L.parseLost(undefined), null);
 // снятые страницы выпадают, у оставшихся — исходные номера
 assert.deepStrictEqual(L.keptPages(['a', 'b', 'c', 'd'], new Set([1, 2])), [['a', 0], ['d', 3]]);
 assert.deepStrictEqual(L.keptPages(['a', 'b'], undefined), [['a', 0], ['b', 1]]);
+// GroupLe: фрагмент реальной страницы главы ReadManga
+const rmInit = `var chapterInfo = {}; rm_h.readerInit(chapterInfo, [['https://rm.one-way.work/','',"auto/89/39/43/1_res-py-01.jpg?t=1&u=0&h=zH",720,2725, ''],['https://rm.one-way.work/','',"auto/89/39/43/13_res.jpg",1080,1528, '']], true, [{"path":"https://rm.one-way.work/","res":false}], false);`;
+assert.deepStrictEqual(L.grouplePages(rmInit), [
+  { urls: ['https://rm.one-way.work/auto/89/39/43/1_res-py-01.jpg?t=1&u=0&h=zH', 'https://rm.one-way.work/auto/89/39/43/1_res-py-01.jpg'], width: 720, height: 2725 },
+  { urls: ['https://rm.one-way.work/auto/89/39/43/13_res.jpg'], width: 1080, height: 1528 },
+]);
+assert.deepStrictEqual(L.grouplePages('<html>без читалки</html>'), []);
 assert.ok(L.sameNum('01', '1') && L.sameNum('10.5', '10.5') && !L.sameNum('1', '2') && !L.sameNum('', '0'));
 
 const jwt = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.abc_DEF-123';
