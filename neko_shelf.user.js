@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NekoShelf
 // @namespace    https://github.com/Laynholt/neko_shelf
-// @version      1.9.0
+// @version      1.9.1
 // @description  Скачивание манги, манхвы и ранобэ с MangaLIB, RanobeLIB, HentaiLIB, SlashLIB, ReManga, MangaBuff, MangaDex, Dynasty Scans, LilyManga, Yurivan, ReadManga, SelfManga, SeiManga, IMHentai, Nude-Moon, nhentai в PDF, CBZ, ZIP, EPUB, FB2, TXT и HTML. Своя читалка там, где сайт без входа показывает 404. Основан на LibSaver (dfy-dpg).
 // @author       laynholt
 // @license      GPL-3.0
@@ -152,9 +152,17 @@
     const t = String(title || '');
     const clean = (s) => s.replace(/\s*(?:[\\/:*?"<>|$&]+\s*)+/g, (m) => (/\s/.test(m) ? ' - ' : '-')).replace(/\s+/g, ' ').replace(/^[\s-]+|[\s-]+$/g, '');
     const a = clean(author || t.match(/\[([^\]]+)\]/)?.[1] || t.match(/^\s*\(([^)]+)\)/)?.[1] || '').slice(0, 60);
-    const name = clean(t.replace(/\[[^\]]*\]|\([^)]*\)/g, ' ')) || clean(t.replace(/[[\]()]/g, ' ')) || 'title'; // название целиком в скобках — оставляем текст без скобок
+    // () режем только по краям — (C105) в начале и (Пародия) в конце; «Record (1)» внутри названия и числовое (2) в конце остаются.
+    // Полноширинные （） в конце — только с латиницей внутри (（Chinese）); японский текст в них — часть названия
+    const bare = t.replace(/\[[^\]]*\]|[[\]]/g, ' ').replace(/^(?:\s*\([^)]*\))+/, ' ').replace(/(?:\s*(?:\((?!\d+\))[^)]*\)|（[\x20-\x7e]*）))+\s*$/, ' ');
+    const name = clean(bare) || clean(t.replace(/[[\]()]/g, ' ')) || 'title'; // название целиком в скобках — оставляем текст без скобок
     return (a ? `[${a}] - ${name}` : name).slice(0, 150);
   }
+
+  // автор nhentai: теги artist, а без них — [Круг/Автор] в начале полного названия (pretty его уже не содержит)
+  // теги сайт хранит в нижнем регистре — каждое слово с заглавной
+  const nhAuthor = (g) => (g.tags || []).filter((t) => t.type === 'artist').map((t) => t.name.replace(/(^|\s)(\p{Ll})/gu, (m, s, c) => s + c.toUpperCase())).join(', ')
+    || String(g.title?.english || g.title?.japanese || '').match(/^\s*(?:\([^)]*\)\s*)*\[([^\]]+)\]/)?.[1].trim() || '';
 
   // Ищет JWT в строке / JSON / вложенных объектах (сайт хранит токен в localStorage под разными ключами)
   function findJwt(v) {
@@ -342,7 +350,7 @@
   }
 
   if (typeof module === 'object' && module.exports) {
-    module.exports = { findJwt, pmToHtml, sniffExt, jpegInfo, parseSlug, parseLost, sameNum, chapterLabel, keptPages, esc, safeName, fileTitle, mostCommon, crc32, infoRows, grouplePages, Zip, Pdf };
+    module.exports = { findJwt, pmToHtml, sniffExt, jpegInfo, parseSlug, parseLost, sameNum, chapterLabel, keptPages, esc, safeName, fileTitle, nhAuthor, mostCommon, crc32, infoRows, grouplePages, Zip, Pdf };
     return;
   }
 
@@ -773,7 +781,7 @@
     const c = g.cover || g.images?.cover;
     return gallery({
       title: g.title?.pretty || g.title?.english || g.title?.japanese || id,
-      author: (g.tags || []).filter((t) => t.type === 'artist').map((t) => t.name).join(', '),
+      author: nhAuthor(g),
       genres: (g.tags || []).filter((t) => t.type === 'category').map((t) => t.name),
       tags: (g.tags || []).filter((t) => ['parody', 'character', 'tag', 'language'].includes(t.type)).map((t) => t.name),
       description: '',

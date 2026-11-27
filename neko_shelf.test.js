@@ -47,6 +47,15 @@ assert.throws(() => L.sniffExt(new TextEncoder().encode('<html>').buffer));
 assert.strictEqual(L.safeName('a/b:c?'), 'a b c');
 // имя файла: автор из тега, скобки из названия убираем, запрещённые символы -> «-»
 assert.strictEqual(L.fileTitle('(C105) [Circle (Art)] Title: Sub | AC/DC (Parody) [English]', 'Art'), '[Art] - Title - Sub - AC-DC');
+assert.strictEqual(L.fileTitle('] Iperitto Rayearth VX', 'Neriwasabi'), '[Neriwasabi] - Iperitto Rayearth VX'); // опечатка «]]» на сайте
+assert.strictEqual(L.fileTitle('Frostleaf｜霜叶 (Arknights)（Chinese）', 'Aohonoo'), '[Aohonoo] - Frostleaf｜霜叶');
+assert.strictEqual(L.fileTitle('ネトラレ生配信（純愛）', 'Minority'), '[Minority] - ネトラレ生配信（純愛）');
+// nhentai: автор из тегов, без тегов — из [] в начале полного названия (включая после «(событие)»)
+assert.strictEqual(L.nhAuthor({ tags: [{ type: 'artist', name: 'komi' }], title: { english: '[Komi] X' } }), 'Komi');
+assert.strictEqual(L.nhAuthor({ tags: [{ type: 'artist', name: 'plastic gomi' }, { type: 'artist', name: 'tako6' }], title: {} }), 'Plastic Gomi, Tako6');
+assert.strictEqual(L.nhAuthor({ tags: [], title: { english: '(C105) [Circle (Art)] X [English]' } }), 'Circle (Art)');
+assert.strictEqual(L.nhAuthor({ tags: [], title: { english: 'X [English]' } }), '');
+assert.strictEqual(L.fileTitle("[Nicholas-sensei] Sugar Dating Diary ~Record (1): M-chan's First Experience XX~ [English] [Gagak_Ireng] [Digital]"), "[Nicholas-sensei] - Sugar Dating Diary ~Record (1) - M-chan's First Experience XX~");
 assert.strictEqual(L.fileTitle('[Circle (Art)] Title', ''), '[Circle (Art)] - Title');
 assert.strictEqual(L.fileTitle('(GatorChan) Leo and Amalia', ''), '[GatorChan] - Leo and Amalia');
 assert.strictEqual(L.fileTitle('Морино $ & Ко', 'Автор'), '[Автор] - Морино - Ко');
